@@ -18,7 +18,7 @@ AGENT_MODEL = os.environ.get("AGENT_MODEL", "deepseek-v3.2")
 JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "claude-sonnet-4-6")
 BASE_URL = os.environ.get("PROXY_BASE_URL", "https://models.aikin.club")
 API_KEY = os.environ.get("PROXY_API_KEY", "")
-SHARDS = int(os.environ.get("SHARDS", "4"))
+SHARDS = int(os.environ.get("SHARDS", "1"))   # 1 = PURE SABER (default)
 MAX_STEPS = int(os.environ.get("MAX_STEPS", "30"))
 SCENARIO = os.environ.get("SCENARIO", "").strip()      # optional: A / B / C
 PHASE = os.environ.get("PHASE", "all")                 # all | infer | judge | report
@@ -145,10 +145,45 @@ def purge_errored():
     return len(bad)
 
 
-def run_inference():
+def run_inference_pure():
+    """PURE SABER MODE (default).
+
+    Runs exactly the command SABER's own RUNNING.md documents:
+
+        python3 run_osbench.py <model>
+
+    One process, sequential, full task set, SABER's own ordering. No sharding,
+    no purging, no retrying — nothing of ours touches the execution path. This
+    is byte-for-byte the way the SABER authors run their own benchmark.
+    """
+    total = n_total()
+    log("INFERENCE: PURE SABER MODE (single process, sequential)")
+    log(f"  command : python3 run_osbench.py {MODEL_SLUG}" + (f" {SCENARIO}" if SCENARIO else ""))
+    log(f"  tasks   : {total}   already done: {n_done()} (SABER's own resume logic)")
+    log("  NOTE: this is the slow, unimpeachable path (~24-36 h for 716 tasks).")
+    lf = open(OUT / "logs" / "inference.log", "a")
+    args = [sys.executable, "run_osbench.py", MODEL_SLUG] + ([SCENARIO] if SCENARIO else [])
+    p = subprocess.run(args, cwd=SABER, stdout=lf, stderr=subprocess.STDOUT)
+    lf.close()
+    nbad = len(errored_results())
+    log(f"INFERENCE COMPLETE: {n_done()}/{total} tasks, rc={p.returncode}, {nbad} errored")
+    if nbad:
+        log(f"  NOTE: {nbad} task(s) recorded an error. SABER treats these as 'Incapable'.")
+        log("  Left as-is to stay faithful to SABER's behaviour. See logs/inference.log.")
+
+
+def run_inference_sharded():
+    """OPT-IN FAST MODE (--shards N, N>1).
+
+    Runs SABER's runner once per (scenario, category) using its OWN documented
+    CLI arguments, N at a time. Same code, same tasks, same judge — only the
+    process layout differs. Adds a purge/retry safety net because parallel load
+    can trip SABER's 10s container-start timeout.
+    """
     pairs = shards()
     total = n_total()
-    log(f"INFERENCE: {total} tasks, {len(pairs)} shard units, {SHARDS} parallel workers")
+    log(f"INFERENCE: SHARDED MODE — {total} tasks, {len(pairs)} shard units, {SHARDS} workers")
+    log("  (opt-in: faster, but adds parallel load SABER does not run under by default)")
     purge_errored()
     log(f"  already done: {n_done()} (resumable — re-running skips completed tasks)")
     queue, running = list(pairs), []
@@ -313,7 +348,10 @@ if __name__ == "__main__":
     manifest()
     if PHASE in ("all", "infer"):
         preflight()
-        run_inference()
+        if SHARDS <= 1:
+            run_inference_pure()
+        else:
+            run_inference_sharded()
     if PHASE in ("all", "judge"):
         preflight() if PHASE == "judge" else None
         run_judge()

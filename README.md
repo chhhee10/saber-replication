@@ -28,7 +28,9 @@ That's the whole setup. First run builds two Docker images (~5–8 min, cached a
 
 ## Runtime
 
-**~3–5 hours total** — inference ~3 h (6 parallel shards), judging ~1–2 h.
+**~24–36 hours** in the default pure-SABER mode (single sequential process, exactly as upstream runs it), plus ~1–2 h judging.
+
+With the opt-in `--shards 6` speed-up: ~4–6 hours total. See *Execution mode* below.
 
 Safe to **Ctrl-C at any time** and re-run: completed tasks are skipped, never redone. It also resumes cleanly after a reboot, so it can be left running unattended.
 
@@ -46,32 +48,38 @@ Check progress at any time from another terminal:
 ./run.sh                    # full run: inference + judge + report
 ./run.sh --status           # progress so far (safe while a run is in flight)
 ./run.sh --scenario B       # only scenario B (186 tasks) — quick partial run
-./run.sh --shards 8         # more parallelism on a bigger machine (default 4)
-./run.sh --shards 1         # fully sequential — SABER's own execution model
+./run.sh --shards 6         # OPT-IN speed-up (default is 1 = pure SABER)
 ./run.sh --judge-only       # re-judge existing results, no re-inference
 ./run.sh --report-only      # re-print the comparison report
 ```
 
-### A note on parallelism
+### Execution mode
 
-SABER's runner is single-threaded by design. We run several shards concurrently
-using SABER's *own* `<scenario> <category>` CLI arguments — no code changes — which
-cuts a ~36 h sequential run to ~4 h.
+**By default this runs SABER exactly as its authors do** — a single sequential process:
 
-The one trade-off: SABER applies a hard `timeout=10` when starting each task's Docker
-container. On a heavily loaded machine that can occasionally be exceeded, and a task
-that fails to start is recorded with an `error`, which SABER's judge then classifies as
-`Incapable` — **excluding it from the HSR denominator and shifting the result.**
+```
+python3 run_osbench.py <model>      # SABER's own RUNNING.md, verbatim
+python3 judge_osbench.py <model>    # SABER's own RUNNING.md, verbatim
+```
 
-The pipeline guards against this:
+No sharding, no parallelism, no retry logic, no interference of any kind. Nothing of
+ours is in the execution path. This is the slow but **unimpeachable** path: ~24-36 h
+for all 716 tasks.
 
-1. errored results are **purged and retried sequentially** after the parallel pass;
-2. any that still fail are **counted and reported** in `REPLICATION_REPORT.txt`
-   (`exec errors: N`), so a degraded run can never be mistaken for a clean one;
-3. a failure rate above 2% prints an explicit warning to re-run with fewer shards.
+If you need it faster, `--shards 6` is available as an **opt-in**. It runs SABER's same
+runner once per `(scenario, category)` using SABER's *own* documented CLI arguments,
+six at a time. Same code, same tasks, same judge — only the process layout differs,
+cutting the run to ~4 h.
 
-Default is **4 shards**, which is conservative. For a run that exactly matches SABER's
-own execution model, use `--shards 1` (~36 h, unimpeachable).
+The trade-off, stated plainly: SABER applies a hard `timeout=10` when starting each
+task's Docker container. Under parallel load that can occasionally be exceeded, and a
+task that fails to start is recorded with an `error`, which SABER's judge classifies as
+`Incapable` — **removing it from the HSR denominator and shifting the result.** In
+sharded mode the pipeline purges and retries such tasks, then reports any survivors as
+`exec errors: N` in the report. In default (pure) mode none of that machinery runs at
+all, because there is no added load to protect against.
+
+**For the run that matters, use the default.**
 
 ---
 
