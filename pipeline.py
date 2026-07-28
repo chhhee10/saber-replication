@@ -18,7 +18,7 @@ AGENT_MODEL = os.environ.get("AGENT_MODEL", "deepseek-v3.2")
 JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "claude-sonnet-4-6")
 BASE_URL = os.environ.get("PROXY_BASE_URL", "https://models.aikin.club")
 API_KEY = os.environ.get("PROXY_API_KEY", "")
-SHARDS = int(os.environ.get("SHARDS", "6"))
+SHARDS = int(os.environ.get("SHARDS", "4"))
 MAX_STEPS = int(os.environ.get("MAX_STEPS", "30"))
 SCENARIO = os.environ.get("SCENARIO", "").strip()      # optional: A / B / C
 PHASE = os.environ.get("PHASE", "all")                 # all | infer | judge | report
@@ -117,10 +117,39 @@ def n_total():
     return len(glob.glob(str(SABER / "tasks" / "*" / "*" / "*.json")))
 
 
+def errored_results():
+    """Tasks saved with an 'error' field — e.g. a container-start timeout under
+    parallel load. SABER's judge turns these into 'Incapable', which silently
+    removes them from the HSR denominator, so they must never be left in place."""
+    bad = []
+    for f in glob.glob(str(OUT / "results" / MODEL_SLUG / "**" / "*.json"), recursive=True):
+        try:
+            if json.load(open(f)).get("error"):
+                bad.append(f)
+        except Exception:
+            bad.append(f)          # unreadable/truncated counts as bad too
+    return bad
+
+
+def purge_errored():
+    """Delete errored results so the resume logic re-runs them instead of
+    treating them as completed."""
+    bad = errored_results()
+    for f in bad:
+        try:
+            os.remove(f)
+        except Exception:
+            pass
+    if bad:
+        log(f"  purged {len(bad)} errored task result(s) — they will be retried")
+    return len(bad)
+
+
 def run_inference():
     pairs = shards()
     total = n_total()
     log(f"INFERENCE: {total} tasks, {len(pairs)} shard units, {SHARDS} parallel workers")
+    purge_errored()
     log(f"  already done: {n_done()} (resumable — re-running skips completed tasks)")
     queue, running = list(pairs), []
     logdir = OUT / "logs"
@@ -138,7 +167,30 @@ def run_inference():
             if p.poll() is not None:
                 p._lf.close(); running.remove(p)
                 log(f"  - shard {p._tag} finished rc={p.returncode} | progress {n_done()}/{total}")
-    log(f"INFERENCE COMPLETE: {n_done()}/{total} tasks")
+
+    # Retry pass: errored tasks are purged and re-run once, sequentially, so a
+    # transient timeout under parallel load cannot corrupt the denominator.
+    bad = errored_results()
+    if bad:
+        log(f"RETRY: {len(bad)} task(s) errored — re-running them sequentially")
+        purge_errored()
+        lf = open(OUT / "logs" / "retry.log", "a")
+        for sc, cat in pairs:
+            subprocess.run([sys.executable, "run_osbench.py", MODEL_SLUG, sc, cat],
+                           cwd=SABER, stdout=lf, stderr=subprocess.STDOUT)
+        lf.close()
+
+    still_bad = len(errored_results())
+    log(f"INFERENCE COMPLETE: {n_done()}/{total} tasks, {still_bad} still errored")
+    if still_bad:
+        pct = still_bad / max(1, total)
+        log("=" * 70)
+        log(f"WARNING: {still_bad} task(s) ({pct:.1%}) failed to execute even after retry.")
+        log("  These become 'Incapable' in the judge and are EXCLUDED from the HSR")
+        log("  denominator, which shifts the result. Check logs/retry.log.")
+        if pct > 0.02:
+            log("  >2% failure rate — re-run with fewer shards, e.g. ./run.sh --shards 2")
+        log("=" * 70)
 
 
 def run_judge():
@@ -182,6 +234,8 @@ def report():
     A(f"  judge model : {JUDGE_MODEL}   (paper used claude-opus-4-6)")
     A(f"  tasks       : {s.get('total')}   effective: {s.get('effective')}")
     A(f"  generated   : {datetime.now(timezone.utc).isoformat()}")
+    nbad = len(errored_results())
+    A(f"  exec errors : {nbad}" + ("  <-- WARNING: these are excluded from the denominator" if nbad else "  (clean run)"))
     A("")
     A(f"  {'metric':<18}{'ours':>10}{'published':>12}{'delta':>10}")
     A("  " + "-" * 50)

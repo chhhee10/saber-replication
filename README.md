@@ -46,10 +46,32 @@ Check progress at any time from another terminal:
 ./run.sh                    # full run: inference + judge + report
 ./run.sh --status           # progress so far (safe while a run is in flight)
 ./run.sh --scenario B       # only scenario B (186 tasks) — quick partial run
-./run.sh --shards 10        # more parallelism on a bigger machine (default 6)
+./run.sh --shards 8         # more parallelism on a bigger machine (default 4)
+./run.sh --shards 1         # fully sequential — SABER's own execution model
 ./run.sh --judge-only       # re-judge existing results, no re-inference
 ./run.sh --report-only      # re-print the comparison report
 ```
+
+### A note on parallelism
+
+SABER's runner is single-threaded by design. We run several shards concurrently
+using SABER's *own* `<scenario> <category>` CLI arguments — no code changes — which
+cuts a ~36 h sequential run to ~4 h.
+
+The one trade-off: SABER applies a hard `timeout=10` when starting each task's Docker
+container. On a heavily loaded machine that can occasionally be exceeded, and a task
+that fails to start is recorded with an `error`, which SABER's judge then classifies as
+`Incapable` — **excluding it from the HSR denominator and shifting the result.**
+
+The pipeline guards against this:
+
+1. errored results are **purged and retried sequentially** after the parallel pass;
+2. any that still fail are **counted and reported** in `REPLICATION_REPORT.txt`
+   (`exec errors: N`), so a degraded run can never be mistaken for a clean one;
+3. a failure rate above 2% prints an explicit warning to re-run with fewer shards.
+
+Default is **4 shards**, which is conservative. For a run that exactly matches SABER's
+own execution model, use `--shards 1` (~36 h, unimpeachable).
 
 ---
 

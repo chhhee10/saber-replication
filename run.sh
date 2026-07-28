@@ -8,7 +8,7 @@
 #    ./run.sh --judge-only        re-judge existing results
 #    ./run.sh --report-only       re-print the comparison report
 #    ./run.sh --scenario B        only scenario B (smaller test run)
-#    ./run.sh --shards 8          parallelism (default 6)
+#    ./run.sh --shards 8          parallelism (default 4; use 1 for max fidelity)
 #
 #  Safe to Ctrl-C and re-run — completed tasks are skipped, never redone.
 # ============================================================================
@@ -23,7 +23,7 @@ AGENT_MODEL="${AGENT_MODEL:-deepseek-v3.2}"
 JUDGE_MODEL="${JUDGE_MODEL:-claude-sonnet-4-6}"
 PROXY_BASE_URL="${PROXY_BASE_URL:-https://models.aikin.club}"
 MODEL_SLUG="${MODEL_SLUG:-ds32_repro}"
-SHARDS="${SHARDS:-6}"
+SHARDS="${SHARDS:-4}"
 PHASE="all"; SCENARIO=""
 
 while [[ $# -gt 0 ]]; do
@@ -108,7 +108,7 @@ ok "$RUNNER_IMAGE ready"
 # ---------------------------------------------------------------- run
 c "[3/4] Running pipeline"
 case "$PHASE" in
-  all)    echo "  inference (~6h at ${SHARDS} shards) then judge (~2h)";;
+  all)    echo "  inference (~4-6h at ${SHARDS} shards) then judge (~1-2h)";;
   judge)  echo "  judge only";;
   report) echo "  report only";;
 esac
