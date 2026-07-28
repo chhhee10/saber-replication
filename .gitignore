@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+config.json
+saber/config.json
+saber/results/
+saber/judged/
+saber/logs/
+output/
+*.zip
+.env

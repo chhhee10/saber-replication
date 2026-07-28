@@ -1,0 +1,20 @@
+This repository redistributes portions of SABER / OSBench.
+
+  SABER: Benchmarking Operational Safety of LLM Coding Agents
+         in Stateful Project Workspaces
+  arXiv:2606.01317
+  Copyright 2026 The OSBench Authors
+
+Redistributed under the upstream terms (see saber/LICENSES/):
+  - saber/*.py, saber/Dockerfile.sandbox  ......  Apache License 2.0
+  - saber/tasks/**, saber/reference/**    ......  CC BY 4.0
+
+The SABER source files in this repository are UNMODIFIED and byte-identical
+to upstream. Verify with:
+    diff -r <upstream-saber>/tasks  saber/tasks
+    diff <upstream-saber>/run_osbench.py  saber/run_osbench.py
+
+Original work in this repository (run.sh, pipeline.py, Dockerfile.runner,
+README.md) is licensed under Apache License 2.0 and adds orchestration and
+containerization ONLY -- it does not modify SABER's inference, sandbox,
+judging, or metric computation.

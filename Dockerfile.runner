@@ -1,0 +1,31 @@
+# Runner image for the SABER replication.
+# It does NOT run the benchmark tasks itself — those execute in sibling
+# `osbench-sandbox` containers spawned on the host via the mounted Docker socket.
+# This image only provides a pinned Python environment + the Docker CLI.
+FROM python:3.12-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+# Docker CLI (to spawn sibling sandbox containers) + git for provenance
+RUN apt-get update -qq \
+ && apt-get install -y -qq --no-install-recommends ca-certificates curl gnupg \
+ && install -m 0755 -d /etc/apt/keyrings \
+ && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+ && chmod a+r /etc/apt/keyrings/docker.asc \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list \
+ && apt-get update -qq \
+ && apt-get install -y -qq --no-install-recommends docker-ce-cli \
+ && rm -rf /var/lib/apt/lists/*
+
+# Pinned Python deps — versions fixed so every run is identical
+RUN pip install --no-cache-dir \
+      httpx==0.28.1 \
+      anthropic==0.120.0
+
+WORKDIR /work
+COPY saber/ /work/saber/
+COPY pipeline.py /work/pipeline.py
+
+ENTRYPOINT ["python3", "/work/pipeline.py"]
