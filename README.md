@@ -47,7 +47,8 @@ Check progress at any time from another terminal:
 ```bash
 ./run.sh                    # full run: inference + judge + report
 ./run.sh --status           # progress so far (safe while a run is in flight)
-./run.sh --scenario B       # only scenario B (186 tasks) — quick partial run
+./run.sh --scenario B       # only scenario B (186 tasks) — partial run
+./run.sh --task B_code_001  # a single task (~90s) — quick smoke test
 ./run.sh --shards 6         # OPT-IN speed-up (default is 1 = pure SABER)
 ./run.sh --judge-only       # re-judge existing results, no re-inference
 ./run.sh --report-only      # re-print the comparison report
@@ -120,7 +121,9 @@ We use `claude-sonnet-4-6` instead. We measured the difference directly by judgi
 
 **2. k=1 sampling.** Each task runs once and models are stochastic. SABER sets no temperature or seed — that is the paper's condition too — so ±2–3 points of run-to-run variance is expected.
 
-The report classifies the outcome automatically (close match / partial match / divergent).
+The report only renders a verdict on a complete 716-task run. On a partial run it states
+`PARTIAL RUN — N/716 tasks, not comparable` rather than comparing an incomplete sample
+against the published full-benchmark figure.
 
 > **For an exact-condition replication:** ask the proxy admin to repoint `claude-opus-4-6` in litellm's `config.yaml` from `bedrock/anthropic.claude-opus-4-6-v1` to `bedrock/us.anthropic.claude-opus-4-6-v1` (a regional inference profile). Then run `JUDGE_MODEL=claude-opus-4-6 ./run.sh --judge-only` to re-score the same trajectories with the paper's judge — no re-inference needed, ~$21.
 

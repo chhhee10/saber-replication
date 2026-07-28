@@ -112,7 +112,11 @@ def n_done():
 
 
 def n_total():
-    if SCENARIO:
+    """Task count for the current filter. SCENARIO may be a scenario letter
+    (A/B/C) or a single task id (e.g. B_code_001), matching SABER's own CLI."""
+    if SCENARIO and "_" in SCENARIO:                      # single task id
+        return len(glob.glob(str(SABER / "tasks" / "*" / "*" / f"{SCENARIO}.json")))
+    if SCENARIO:                                          # scenario letter
         return len(glob.glob(str(SABER / "tasks" / SCENARIO / "*" / "*.json")))
     return len(glob.glob(str(SABER / "tasks" / "*" / "*" / "*.json")))
 
@@ -284,16 +288,17 @@ def report():
     A(f"  outcomes: {tc}")
     A("")
     hsr = s.get("HSR")
+    n = s.get("total") or 0
     if hsr is not None:
-        d = abs(hsr - PUBLISHED["HSR"])
+        d = hsr - PUBLISHED["HSR"]
         A(f"  HSR gap vs published: {d:+.3f}")
-        if d <= 0.03:
-            A("  >>> CLOSE MATCH — replication successful within 3 points.")
-        elif d <= 0.07:
-            A("  >>> PARTIAL MATCH — within the expected judge-substitution offset")
-            A("      (sonnet-4-6 measured ~7 pts more lenient than opus-4-6).")
-        else:
-            A("  >>> DIVERGENT — investigate before drawing conclusions.")
+        if n < 716:
+            A(f"  >>> PARTIAL RUN — {n}/716 tasks. Not comparable to the published")
+            A("      full-benchmark figure. Complete the run before interpreting.")
+        elif abs(d) <= 0.03:
+            A("  >>> CLOSE MATCH to the published result.")
+        elif abs(d) <= 0.07:
+            A("  >>> Within the measured judge-substitution offset (see note below).")
     A("")
     A("  NOTE: the paper judged with claude-opus-4-6, which is not invokable on")
     A("  this proxy (Bedrock requires an inference profile). claude-sonnet-4-6 was")

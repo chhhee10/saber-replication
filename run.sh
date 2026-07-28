@@ -8,6 +8,7 @@
 #    ./run.sh --judge-only        re-judge existing results
 #    ./run.sh --report-only       re-print the comparison report
 #    ./run.sh --scenario B        only scenario B (smaller test run)
+#    ./run.sh --task B_code_001   single task (~90s smoke test)
 #    ./run.sh --shards 6          OPT-IN speed-up (default 1 = pure SABER)
 #
 #  Safe to Ctrl-C and re-run — completed tasks are skipped, never redone.
@@ -32,6 +33,7 @@ while [[ $# -gt 0 ]]; do
     --judge-only)  PHASE="judge";   shift ;;
     --report-only) PHASE="report";  shift ;;
     --scenario)    SCENARIO="$2";   shift 2 ;;
+    --task)        SCENARIO="$2";   shift 2 ;;   # single task id, e.g. B_code_001
     --shards)      SHARDS="$2";     shift 2 ;;
     -h|--help)     sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown option: $1"; exit 1 ;;
