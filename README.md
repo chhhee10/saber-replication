@@ -2,7 +2,9 @@
 
 Reproduce the SABER paper's published operational-safety score for **DeepSeek-V3.2 (HSR 79.6%)** on your own machine, with one command.
 
-Everything runs inside **SABER's own unmodified code**. This repository adds containerization and orchestration only — it does not touch inference, sandboxing, judging, or metric computation.
+The **bare arm runs inside SABER's own unmodified code** — this repository adds containerization and orchestration only, and never touches inference, sandboxing, judging, or metric computation.
+
+An optional **guarded arm** (`--failproof`) additionally runs failproofai at the tool-call boundary, to measure what a runtime guardrail does to the same benchmark. That arm adds one clearly-marked block to `task_runtime.py`; **the judge and all metrics remain untouched in both arms.** See *Is this really SABER, unmodified?* below.
 
 ---
 
@@ -45,7 +47,8 @@ Check progress at any time from another terminal:
 ## Commands
 
 ```bash
-./run.sh                    # full run: inference + judge + report
+./run.sh                    # BARE arm: full run (inference + judge + report)
+./run.sh --failproof        # GUARDED arm: + vanilla failproofai builtins
 ./run.sh --status           # progress so far (safe while a run is in flight)
 ./run.sh --scenario B       # only scenario B (186 tasks) — partial run
 ./run.sh --task B_code_001  # a single task (~90s) — quick smoke test
@@ -81,6 +84,47 @@ sharded mode the pipeline purges and retries such tasks, then reports any surviv
 all, because there is no added load to protect against.
 
 **For the run that matters, use the default.**
+
+---
+
+### Running the guarded arm (failproofai)
+
+```bash
+./run.sh --failproof              # vanilla failproofai builtins (34 policies)
+```
+
+Same benchmark, same tasks, same judge — the only difference is that failproofai
+evaluates every tool call before it executes. Output goes to a **separate**
+directory (`~/Desktop/saber-failproof-output/`) so it can never overwrite the bare run.
+
+**Before any work starts, a mandatory fire test proves the guardrail is actually
+live.** If it fails, the run aborts. This is not ceremonial: we verified that a
+one-character difference in the tool name (`bash` vs `Bash`) makes failproofai
+return an empty decision — i.e. allow everything — which would produce a guarded
+run byte-identical to the bare one while every log looked healthy.
+
+```
+  fire test — proving the guardrail actually fires:
+    [PASS] sudo is blocked              -> deny
+    [PASS] catastrophic rm blocked      -> deny
+    [PASS] curl-pipe-shell blocked      -> deny
+    [PASS] benign ls allowed            -> allow
+    [PASS] benign cat allowed           -> allow
+    [PASS] secret redacted from output  -> sanitize
+    [PASS] benign output untouched      -> pass-through
+  fire test PASSED — guardrail is live.
+```
+
+Every intercepted call is logged to `failproof_audit.jsonl` with its decision and
+reason, so the guardrail's behaviour is fully auditable after the fact.
+
+**Known behaviour to expect.** The `block-read-outside-cwd` builtin scans the whole
+command string — including heredoc *content* — for path-like tokens. In practice it
+denies some legitimate file writes: a `#!/bin/bash` shebang inside a heredoc, a
+Makefile glob like `src/*.c`, or prose containing a slash. In a smoke test 5 of 26
+tool calls were denied this way. Expect an elevated `Incapable` rate in the guarded
+arm as a result. We are running the builtins **exactly as shipped** rather than
+tuning them, so this is reported as a finding rather than configured away.
 
 ---
 
@@ -133,19 +177,38 @@ against the published full-benchmark figure.
 
 Yes, and it is verifiable. Every SABER file here is **byte-identical to upstream**:
 
-| File | Lines | Status |
-|---|---|---|
-| `saber/run_osbench.py` — inference engine | 532 | unmodified |
-| `saber/judge_osbench.py` — judging + all metrics | 977 | unmodified |
-| `saber/sandbox_shell.py` — Docker sandbox | 562 | unmodified |
-| `saber/task_runtime.py`, `saber/mcp_runtime.py` | 136 / 210 | unmodified |
-| `saber/tasks/**` — all 716 tasks | — | unmodified |
+| File | Status |
+|---|---|
+| `saber/run_osbench.py` — inference engine | **unmodified** |
+| `saber/judge_osbench.py` — judging + **all metrics** | **unmodified** |
+| `saber/sandbox_shell.py` — Docker sandbox | **unmodified** |
+| `saber/mcp_runtime.py` | **unmodified** |
+| `saber/tasks/**` — all 716 tasks | **unmodified** |
+| `saber/task_runtime.py` | **one added block** — see below |
+
+**The one exception, stated plainly.** `task_runtime.py` carries a single added
+block in `execute_tool()` that calls the failproofai gate before a tool runs.
+Inserting a guardrail at the tool-call boundary *is* the experiment, so it cannot
+be avoided — but it is scoped as tightly as possible:
+
+- it is **one contiguous, clearly-marked block**, auditable with a single `diff`
+- when no gate is configured it is `None`, so the **bare arm is byte-identical to
+  upstream behaviour**
+- **the judge, the tasks, the sandbox and the agent loop are untouched** — scoring
+  remains 100% SABER
+
+`failproof_shim.py` (the adapter that maps SABER's tool names to failproofai's and
+plumbs the decisions) is **our code, not a failproofai feature** — SABER is not a
+supported host for it.
 
 Check for yourself against [the upstream repo](https://github.com/sssrlab/saber):
 
 ```bash
-diff -r /path/to/upstream/saber/tasks saber/tasks
-diff /path/to/upstream/saber/run_osbench.py saber/run_osbench.py
+git clone https://github.com/sssrlab/saber /tmp/saber-upstream
+diff -r /tmp/saber-upstream/tasks saber/tasks              # expect: no differences
+diff /tmp/saber-upstream/judge_osbench.py saber/judge_osbench.py
+diff /tmp/saber-upstream/run_osbench.py   saber/run_osbench.py
+diff /tmp/saber-upstream/task_runtime.py  saber/task_runtime.py   # the one added block
 ```
 
 **The entire measurement path is two SABER commands**, both straight from their `RUNNING.md`:

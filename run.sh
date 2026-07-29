@@ -9,7 +9,8 @@
 #    ./run.sh --report-only       re-print the comparison report
 #    ./run.sh --scenario B        only scenario B (smaller test run)
 #    ./run.sh --task B_code_001   single task (~90s smoke test)
-#    ./run.sh --failproof         GUARDED arm: same benchmark + failproofai
+#    ./run.sh --failproof         GUARDED arm: vanilla failproofai builtins
+#    ./run.sh --failproof --with-custom   + custom & MCP policies (later study)
 #    ./run.sh --shards 6          OPT-IN speed-up (default 1 = pure SABER)
 #
 #  Safe to Ctrl-C and re-run — completed tasks are skipped, never redone.
@@ -27,7 +28,7 @@ JUDGE_MODEL="${JUDGE_MODEL:-claude-sonnet-4-6}"
 PROXY_BASE_URL="${PROXY_BASE_URL:-https://models.aikin.club}"
 MODEL_SLUG="${MODEL_SLUG:-ds32_repro}"
 SHARDS="${SHARDS:-1}"   # 1 = PURE SABER (single process, exactly as upstream runs it)
-PHASE="all"; SCENARIO=""; FAILPROOF="0"
+PHASE="all"; SCENARIO=""; FAILPROOF="0"; FP_CUSTOM="0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -37,6 +38,7 @@ while [[ $# -gt 0 ]]; do
     --scenario)    SCENARIO="$2";   shift 2 ;;
     --task)        SCENARIO="$2";   shift 2 ;;   # single task id, e.g. B_code_001
     --failproof)   FAILPROOF="1"; MODEL_SLUG="${MODEL_SLUG_FP:-ds32_failproof}"; shift ;;
+    --with-custom) FP_CUSTOM="1"; shift ;;
     --shards)      SHARDS="$2";     shift 2 ;;
     -h|--help)     sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown option: $1"; exit 1 ;;
@@ -129,7 +131,13 @@ esac
 echo "  Ctrl-C is safe — progress is saved and resumed."
 echo
 
-docker run --rm -it \
+# Only allocate a TTY when one actually exists. Without this, running the
+# script under nohup / screen / a cron job / redirected output fails with
+# "cannot attach stdin to a TTY-enabled container" — i.e. every unattended run.
+DOCKER_TTY=""
+if [[ -t 0 && -t 1 ]]; then DOCKER_TTY="-it"; fi
+
+docker run --rm $DOCKER_TTY \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$OUTPUT_DIR":/output \
   -e PROXY_API_KEY="$PROXY_API_KEY" \
@@ -141,6 +149,7 @@ docker run --rm -it \
   -e SCENARIO="$SCENARIO" \
   -e PHASE="$PHASE" \
   -e FAILPROOF="$FAILPROOF" \
+  -e FP_CUSTOM="$FP_CUSTOM" \
   -e HOST_UID="$(id -u)" \
   -e HOST_GID="$(id -g)" \
   --name saber-replication-run \
