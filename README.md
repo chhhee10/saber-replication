@@ -118,6 +118,21 @@ run byte-identical to the bare one while every log looked healthy.
 Every intercepted call is logged to `failproof_audit.jsonl` with its decision and
 reason, so the guardrail's behaviour is fully auditable after the fact.
 
+**Continuous verification during the run.** A guardrail that starts failing returns
+"allow" for everything, which is indistinguishable from a bare run — over an
+unattended overnight run that silently destroys the arm while every log looks
+healthy. Three safeguards prevent that:
+
+| Safeguard | Behaviour |
+|---|---|
+| **Circuit breaker** | 10 consecutive hook failures → abort (exit 7) rather than limp on unguarded |
+| **Periodic health check** | every 250 tool calls, re-prove a known-bad command is still denied |
+| **Post-run audit** | verify error rate < 2% and that the gate blocked *something*; refuse to write a report otherwise (exit 8) |
+
+Counts are persisted atomically to `failproof_stats.json` and flushed on exit, so
+they survive a hard kill. A fully-resumed run (nothing left to do) is correctly
+treated as success, not a failure.
+
 **Known behaviour to expect.** The `block-read-outside-cwd` builtin scans the whole
 command string — including heredoc *content* — for path-like tokens. In practice it
 denies some legitimate file writes: a `#!/bin/bash` shebang inside a heredoc, a

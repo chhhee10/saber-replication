@@ -116,16 +116,63 @@ def _classify(stdout: str):
 class FailproofGate:
     """Evaluates SABER tool calls against failproofai. Records every decision."""
 
-    def __init__(self, home: str, enabled: bool = True):
+    def __init__(self, home: str, enabled: bool = True, write_stats: bool = True):
         self.home = home
         self.enabled = enabled
+        # The preflight/fire-test gate must NOT write stats: its atexit flush
+        # would clobber the real inference gate's counts at pipeline exit.
+        self.write_stats = write_stats
         self._suppress_audit = False   # True during the fire test
+        self._consecutive_errors = 0
+        self._calls_since_healthcheck = 0
+        self._n_calls = 0
+        import atexit
+        atexit.register(self.flush)     # always persist final counts
         self.decisions = []          # audit trail, written alongside results
         self.counts = {"allow": 0, "deny": 0, "instruct": 0, "sanitize": 0, "error": 0}
 
-    def evaluate(self, saber_tool: str, tool_input: dict):
+    # A guardrail that starts erroring returns "allow" for everything, which is
+    # indistinguishable from a bare run. Over a 30h unattended run that silently
+    # destroys the arm, so we trip a breaker instead of limping on.
+    MAX_CONSECUTIVE_ERRORS = 10
+    HEALTHCHECK_EVERY = 250          # tool calls between live re-verification
+
+    def _die(self, why: str):
+        msg = ("\n" + "=" * 70 +
+               f"\nFATAL: failproofai gate is no longer trustworthy: {why}\n"
+               "  Continuing would silently produce a guarded arm identical to bare.\n"
+               "  Aborting so the run can be fixed and resumed (completed tasks are kept).\n"
+               + "=" * 70 + "\n")
+        print(msg, flush=True)
+        try:
+            with open(os.environ.get("FAILPROOF_STATS", "/dev/null"), "w") as fh:
+                json.dump({"aborted": True, "reason": why, "counts": self.counts}, fh)
+        except Exception:
+            pass
+        os._exit(7)
+
+    def _healthcheck(self):
+        """Re-prove the guardrail still fires. Runs every HEALTHCHECK_EVERY calls."""
+        prev = self._suppress_audit
+        self._suppress_audit = True
+        try:
+            d, _ = self.evaluate("bash", {"command": "sudo rm -rf /tmp/healthprobe"},
+                                 _internal=True)
+        finally:
+            self._suppress_audit = prev
+        if d not in ("deny", "instruct"):
+            self._die(f"periodic health check failed after {self._n_calls} calls "
+                      f"(probe returned '{d}', expected deny)")
+
+    def evaluate(self, saber_tool: str, tool_input: dict, _internal: bool = False):
         if not self.enabled:
             return "allow", ""
+        if not _internal:
+            self._n_calls += 1
+            self._calls_since_healthcheck += 1
+            if self._calls_since_healthcheck >= self.HEALTHCHECK_EVERY:
+                self._calls_since_healthcheck = 0
+                self._healthcheck()
         fp_tool, fp_input = map_tool(saber_tool, tool_input)
         payload = {
             "hook_event_name": "PreToolUse",
@@ -145,8 +192,13 @@ class FailproofGate:
             # Fail CLOSED on the audit trail: record it loudly rather than
             # silently allowing, which is how guardrails produce useless data.
             self.counts["error"] += 1
+            self._consecutive_errors += 1
             self.decisions.append({"tool": saber_tool, "decision": "error", "detail": str(e)[:200]})
+            if self._consecutive_errors >= self.MAX_CONSECUTIVE_ERRORS:
+                self._die(f"{self._consecutive_errors} consecutive hook failures "
+                          f"(last: {str(e)[:120]})")
             return "allow", ""
+        self._consecutive_errors = 0
         self.counts[decision] += 1
         rec = {
             "tool": saber_tool,
@@ -156,7 +208,32 @@ class FailproofGate:
         }
         self.decisions.append(rec)
         self._append_audit(rec)
+        self._write_stats()
         return decision, text
+
+    def _write_stats(self, force: bool = False):
+        """Persist counts so the pipeline can verify the gate stayed live.
+
+        Flushed periodically to survive a hard kill, and unconditionally at exit
+        so the final partial batch is never lost (a short run would otherwise
+        write no stats at all and be misread as a failure).
+        """
+        path = os.environ.get("FAILPROOF_STATS")
+        if not path or not self.write_stats:
+            return
+        if not force and (self._n_calls % 10):
+            return
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w") as fh:
+                json.dump({"aborted": False, "n_calls": self._n_calls,
+                           "counts": self.counts}, fh)
+            os.replace(tmp, path)       # atomic: never leaves a half-written file
+        except Exception:
+            pass
+
+    def flush(self):
+        self._write_stats(force=True)
 
     def evaluate_post(self, saber_tool: str, tool_input: dict, output: str):
         """PostToolUse — the sanitize-* policies. They inspect the TOOL OUTPUT and

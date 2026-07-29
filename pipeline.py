@@ -90,9 +90,28 @@ def setup_failproof():
     log(f"FAILPROOFAI: {info['n_builtins']} builtins, policy files: {info.get('policy_files')}")
     os.environ["FAILPROOF_HOME"] = home
     os.environ["FAILPROOF_AUDIT"] = str(OUT / "failproof_audit.jsonl")
-    gate = FS.FailproofGate(home)
+    os.environ["FAILPROOF_STATS"] = str(OUT / "failproof_stats.json")
+    gate = FS.FailproofGate(home, write_stats=False)   # preflight only
     FS.preflight_or_die(gate, check_mcp=bool(extras), check_custom=FP_CUSTOM)  # aborts if not firing
     return info
+
+
+def reap_orphans():
+    """Remove sandbox containers orphaned by a previous killed run.
+
+    SABER starts task containers with --rm, but a hard kill (laptop sleep,
+    power loss, docker kill) leaves them running: the parent never gets to stop
+    them. Across a night of restarts they accumulate and consume RAM/disk.
+    """
+    try:
+        out = subprocess.run(["docker", "ps", "-aq", "--filter", "name=osbench-"],
+                             capture_output=True, text=True, timeout=30).stdout.split()
+        if out:
+            subprocess.run(["docker", "rm", "-f"] + out,
+                           capture_output=True, timeout=120)
+            log(f"reaped {len(out)} orphaned sandbox container(s) from a previous run")
+    except Exception as e:
+        log(f"warning: could not reap orphans: {e}")
 
 
 def preflight():
@@ -295,6 +314,55 @@ def run_judge():
         sys.exit(4)
 
 
+def check_gate_health():
+    """After inference, verify the guardrail stayed live for the whole run.
+
+    A gate that starts erroring returns allow for everything, producing a
+    'guarded' arm that is silently identical to bare. Never report such a run
+    as clean.
+    """
+    if not FAILPROOF:
+        return True
+    f = OUT / "failproof_stats.json"
+    if not f.exists():
+        log("WARNING: no failproof_stats.json — cannot confirm the gate stayed live.")
+        return False
+    try:
+        st = json.load(open(f))
+    except Exception:
+        log("WARNING: failproof_stats.json unreadable."); return False
+    if st.get("aborted"):
+        log("=" * 70)
+        log(f"FATAL: the gate aborted mid-run: {st.get('reason')}")
+        log("  Results are INCOMPLETE. Fix the cause and re-run (completed tasks resume).")
+        log("=" * 70)
+        return False
+    c = st.get("counts", {}); n = st.get("n_calls", 0)
+    errs = c.get("error", 0)
+    rate = errs / max(1, n)
+    log(f"GATE HEALTH: {n} tool calls evaluated — "
+        f"deny={c.get('deny',0)} instruct={c.get('instruct',0)} "
+        f"sanitize={c.get('sanitize',0)} allow={c.get('allow',0)} errors={errs}")
+    if rate > 0.02:
+        log("=" * 70)
+        log(f"FATAL: {errs}/{n} ({rate:.1%}) hook calls FAILED. On failure the gate")
+        log("  allows the action, so this arm is partially unguarded and NOT valid.")
+        log("=" * 70)
+        return False
+    if n == 0:
+        # Fully-resumed run: every task was already complete, so the gate was
+        # never consulted. Correct, not a failure.
+        log("  (no tool calls this run — all tasks already complete; nothing to verify)")
+        return True
+    if c.get("deny", 0) + c.get("instruct", 0) + c.get("sanitize", 0) == 0:
+        log("=" * 70)
+        log(f"FATAL: the gate evaluated {n} tool calls and blocked NOTHING.")
+        log("  That is indistinguishable from a bare run — treating as a failure.")
+        log("=" * 70)
+        return False
+    return True
+
+
 def report():
     sf = OUT / "judged" / MODEL_SLUG / "summary.json"
     if not sf.exists():
@@ -393,11 +461,15 @@ if __name__ == "__main__":
     manifest()
     if PHASE in ("all", "infer"):
         preflight()
+        reap_orphans()
         setup_failproof()
         if SHARDS <= 1:
             run_inference_pure()
         else:
             run_inference_sharded()
+    if PHASE in ("all", "infer") and FAILPROOF:
+        if not check_gate_health():
+            sys.exit(8)
     if PHASE in ("all", "judge"):
         preflight() if PHASE == "judge" else None
         run_judge()
