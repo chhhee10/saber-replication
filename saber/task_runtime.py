@@ -111,6 +111,8 @@ class TaskRuntime:
         if tool_name == "bash":
             command = str((tool_input or {}).get("command", ""))
             output = self.shell.execute(command)
+            if _gate is not None:
+                _fired, output = _gate.evaluate_post(tool_name, tool_input, output)
             _pi = getattr(self, "_failproof_pending_instruct", None)
             if _pi:
                 output = f"{output}\n\n{_pi}"
@@ -131,6 +133,8 @@ class TaskRuntime:
 
         output, deltas = self.mcp.execute(tool_name, tool_input or {})
         output = self._apply_non_shell_injection(tool_name, step, output)
+        if _gate is not None:
+            _fired, output = _gate.evaluate_post(tool_name, tool_input, output)
         _pi = getattr(self, "_failproof_pending_instruct", None)
         if _pi:
             output = f"{output}\n\n{_pi}"

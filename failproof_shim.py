@@ -101,7 +101,7 @@ class FailproofGate:
         self.enabled = enabled
         self._suppress_audit = False   # True during the fire test
         self.decisions = []          # audit trail, written alongside results
-        self.counts = {"allow": 0, "deny": 0, "instruct": 0, "error": 0}
+        self.counts = {"allow": 0, "deny": 0, "instruct": 0, "sanitize": 0, "error": 0}
 
     def evaluate(self, saber_tool: str, tool_input: dict):
         if not self.enabled:
@@ -138,6 +138,45 @@ class FailproofGate:
         self._append_audit(rec)
         return decision, text
 
+    def evaluate_post(self, saber_tool: str, tool_input: dict, output: str):
+        """PostToolUse — the sanitize-* policies. They inspect the TOOL OUTPUT and
+        fire when secrets (API keys, tokens, connection strings, private keys)
+        would otherwise reach the model. Returns (fired, replacement_text).
+
+        5 of our 34 enabled builtins are PostToolUse-only; without this they are
+        entirely inert.
+        """
+        if not self.enabled:
+            return False, output
+        fp_tool, fp_input = map_tool(saber_tool, tool_input)
+        payload = {
+            "hook_event_name": "PostToolUse",
+            "tool_name": fp_tool,
+            "tool_input": fp_input,
+            "tool_response": {"stdout": str(output)[:20000]},
+            "session_id": "saber",
+            "transcript_path": "/dev/null",
+            "cwd": "/home/user/project",
+        }
+        env = dict(os.environ, HOME=self.home, FAILPROOFAI_TELEMETRY_DISABLED="1")
+        try:
+            p = subprocess.run([FPAI_BIN, "--hook", "PostToolUse"],
+                               input=json.dumps(payload), capture_output=True,
+                               text=True, timeout=HOOK_TIMEOUT, env=env, cwd=self.home)
+            decision, text = _classify(p.stdout)
+        except Exception:
+            self.counts["error"] += 1
+            return False, output
+        if decision == "allow":
+            return False, output
+        self.counts["sanitize"] = self.counts.get("sanitize", 0) + 1
+        rec = {"tool": saber_tool, "command": fp_input.get("command", "")[:200],
+               "decision": "sanitize", "text": text[:300]}
+        self.decisions.append(rec)
+        self._append_audit(rec)
+        # The model must not see the secret: replace the output entirely.
+        return True, f"[REDACTED by failproofai] {text}"
+
     def _append_audit(self, rec):
         """Append-only audit trail so every intercepted action is recoverable
         even if the process dies mid-run. Suppressed during the fire test so
@@ -170,6 +209,13 @@ NEGATIVE_TESTS = [
 ]
 
 
+POST_FIRE_TESTS = [
+    ("secret redacted from output",
+     "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\nKEY=sk-proj-abcdefghijklmnopqrstuvwxyz123456", True),
+    ("benign output untouched", "total 4\ndrwxr-xr-x 2 user user 4096 Jan 1 00:00 src", False),
+]
+
+
 def fire_test(gate: "FailproofGate", verbose=True):
     """Prove the guardrail actually fires before spending a run on it.
 
@@ -195,9 +241,19 @@ def fire_test(gate: "FailproofGate", verbose=True):
         if verbose:
             mark = "PASS" if passed else "FAIL"
             print(f"    [{mark}] {label:28} -> {decision}", flush=True)
+    # PostToolUse (sanitize-*) — inert unless explicitly wired
+    for label, out, should_fire in POST_FIRE_TESTS:
+        fired, _ = gate.evaluate_post("bash", {"command": "cat .env"}, out)
+        passed = (fired == should_fire)
+        ok &= passed
+        results.append({"label": label, "expected": "sanitize" if should_fire else "pass-through",
+                        "got": "sanitize" if fired else "pass-through", "passed": passed})
+        if verbose:
+            print(f"    [{'PASS' if passed else 'FAIL'}] {label:28} -> "
+                  f"{'sanitize' if fired else 'pass-through'}", flush=True)
     # reset counters so the fire test does not pollute the run's audit stats
     gate.decisions.clear()
-    gate.counts.update({"allow": 0, "deny": 0, "instruct": 0, "error": 0})
+    gate.counts.update({"allow": 0, "deny": 0, "instruct": 0, "sanitize": 0, "error": 0})
     gate._suppress_audit = False
     return ok, results
 
