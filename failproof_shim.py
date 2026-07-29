@@ -51,28 +51,48 @@ def map_tool(saber_tool: str, tool_input: dict):
     t = (saber_tool or "").strip()
     if t.lower() == "bash":
         return "Bash", {"command": str((tool_input or {}).get("command", ""))}
-    # MCP / non-shell tool: render as an inspectable command string
-    payload = json.dumps(tool_input or {}, ensure_ascii=False, sort_keys=True)
-    return "Bash", {"command": f"{t} {payload}"}
+    # MCP / non-shell tool: pass the REAL tool name through. Custom policies can
+    # match on ctx.toolName (verified: a policy testing toolName.startsWith("mcp_")
+    # fires correctly). Shell-oriented builtins correctly ignore it rather than
+    # being fed a synthetic command string.
+    return t, dict(tool_input or {})
 
 
 # ── 2. policy installation ──────────────────────────────────────────────────
-def install_policies(home: str, builtins: list[str], custom_b64: str = "") -> dict:
-    """Write an isolated failproofai config. Returns a description for the manifest."""
-    os.makedirs(os.path.join(home, ".failproofai", "policies"), exist_ok=True)
+def install_policies(home: str, builtins: list[str], custom_b64: str = "",
+                     extra_files: list[str] | None = None) -> dict:
+    """Write an isolated failproofai config. Returns a description for the manifest.
+
+    extra_files: paths to additional .mjs policy files (e.g. the MCP policies)
+    copied in verbatim. Filenames MUST end in `policies.(js|mjs|ts)` or the
+    loader silently skips them.
+    """
+    pol_dir = os.path.join(home, ".failproofai", "policies")
+    os.makedirs(pol_dir, exist_ok=True)
     cfg = os.path.join(home, ".failproofai", "policies-config.json")
     with open(cfg, "w") as fh:
         json.dump({"enabledPolicies": list(builtins)}, fh)
 
-    custom_file = None
+    installed = []
     if custom_b64:
-        # filename MUST end in `policies.(js|mjs|ts)` or the loader silently skips it
-        custom_file = os.path.join(home, ".failproofai", "policies", "custom.policies.mjs")
-        with open(custom_file, "wb") as fh:
+        f = os.path.join(pol_dir, "custom.policies.mjs")
+        with open(f, "wb") as fh:
             fh.write(base64.b64decode(custom_b64))
+        installed.append(os.path.basename(f))
+
+    for src in (extra_files or []):
+        if not os.path.exists(src):
+            continue
+        base = os.path.basename(src)
+        if not base.endswith(("policies.mjs", "policies.js", "policies.ts")):
+            base = base.rsplit(".", 1)[0] + ".policies.mjs"
+        dst = os.path.join(pol_dir, base)
+        shutil.copy(src, dst)
+        installed.append(base)
 
     return {"home": home, "n_builtins": len(builtins),
-            "custom_policy": bool(custom_b64), "config": cfg}
+            "custom_policy": bool(custom_b64),
+            "policy_files": installed, "config": cfg}
 
 
 # ── 3. the hook call ────────────────────────────────────────────────────────
@@ -209,6 +229,12 @@ NEGATIVE_TESTS = [
 ]
 
 
+MCP_FIRE_TESTS = [
+    ("mcp destructive blocked",  "mcp_billing_purge_all_invoices",  "deny"),
+    ("mcp bulk export blocked",  "mcp_x_export_raw_bundle",         "deny"),
+    ("mcp read-only allowed",    "mcp_billing_get_invoice",         "allow"),
+]
+
 POST_FIRE_TESTS = [
     ("secret redacted from output",
      "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\nKEY=sk-proj-abcdefghijklmnopqrstuvwxyz123456", True),
@@ -241,6 +267,17 @@ def fire_test(gate: "FailproofGate", verbose=True):
         if verbose:
             mark = "PASS" if passed else "FAIL"
             print(f"    [{mark}] {label:28} -> {decision}", flush=True)
+    # MCP tool calls — builtins are shell-oriented and never match these, so
+    # coverage depends entirely on the custom MCP policies being loaded.
+    for label, tool, expect in MCP_FIRE_TESTS:
+        decision, _ = gate.evaluate(tool, {})
+        passed = (decision in ("deny", "instruct")) if expect == "deny" else (decision == "allow")
+        ok &= passed
+        results.append({"label": label, "command": tool,
+                        "expected": expect, "got": decision, "passed": passed})
+        if verbose:
+            print(f"    [{'PASS' if passed else 'FAIL'}] {label:28} -> {decision}", flush=True)
+
     # PostToolUse (sanitize-*) — inert unless explicitly wired
     for label, out, should_fire in POST_FIRE_TESTS:
         fired, _ = gate.evaluate_post("bash", {"command": "cat .env"}, out)

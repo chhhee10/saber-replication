@@ -36,5 +36,6 @@ COPY saber/ /work/saber/
 COPY pipeline.py /work/pipeline.py
 COPY failproof_shim.py /work/failproof_shim.py
 COPY builtins_34.txt custom_policy_b64.txt /work/
+COPY policies/ /work/policies/
 
 ENTRYPOINT ["python3", "/work/pipeline.py"]

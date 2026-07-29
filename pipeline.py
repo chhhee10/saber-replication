@@ -80,8 +80,10 @@ def setup_failproof():
         custom = open("/work/custom_policy_b64.txt").read().strip()
     except Exception:
         pass
-    info = FS.install_policies(home, builtins, custom)
-    log(f"FAILPROOFAI: {info['n_builtins']} builtins, custom_policy={info['custom_policy']}")
+    mcp_pol = "/work/policies/mcp-harms.policies.mjs"
+    info = FS.install_policies(home, builtins, custom,
+                               extra_files=[mcp_pol] if os.path.exists(mcp_pol) else [])
+    log(f"FAILPROOFAI: {info['n_builtins']} builtins, policy files: {info.get('policy_files')}")
     os.environ["FAILPROOF_HOME"] = home
     os.environ["FAILPROOF_AUDIT"] = str(OUT / "failproof_audit.jsonl")
     gate = FS.FailproofGate(home)
