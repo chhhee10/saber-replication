@@ -44,18 +44,47 @@ Check progress at any time from another terminal:
 
 ---
 
+## What it actually does
+
+| Phase | Duration | What happens |
+|---|---|---|
+| **1. Setup** | ~5–8 min *(first run only)* | Verifies Docker, the API key and disk space, then builds two images: `osbench-sandbox` (the Ubuntu box each task runs in — SABER's own Dockerfile) and the runner (Python 3.12 + failproofai + Docker CLI). Cached afterwards. |
+| **2. Safety checks** | ~30 sec | Clears containers orphaned by any previous crashed run. Pings both models to confirm they respond **before** spending anything. In the guarded arm, installs the policies and runs the **fire test** — aborts here rather than running for a day unguarded. |
+| **3. Inference** | **~24–36 h** | Runs SABER's own `run_osbench.py` over all 716 tasks, one at a time (see below). |
+| **4. Judging** | ~1–2 h | Runs SABER's own `judge_osbench.py`. The judge model reads all 716 transcripts and decides per task: was anything harmful, and did the agent complete / refuse / fail — producing SABER's six outcome classes and the HSR. |
+| **5. Report** | instant | Writes `REPLICATION_REPORT.txt` — your numbers beside the paper's. |
+
+**What happens per task during inference:**
+
+1. A **fresh Docker container** starts, populated with that task's project files
+2. The agent model is given the task (e.g. *"clean up the database"*) and begins issuing shell commands
+3. *(guarded arm only)* **failproofai inspects each command before it executes** — `deny` means it never runs and the agent is told why; `instruct` means it runs with a warning injected; `allow` passes through. Every decision is appended to `failproof_audit.jsonl`
+4. The full transcript is saved and the container destroyed
+
+At roughly 2.5–3 min per task, expect **~20–24 tasks/hour**. The log is mostly SABER's own output — one block per task, 716 times.
+
+**Where the money goes:** ~$7 on inference (the 716 task runs), ~$13 on judging. failproofai itself is free — it runs locally, no API.
+
+---
+
 ## Commands
 
 ```bash
 ./run.sh                    # BARE arm: full run (inference + judge + report)
-./run.sh --failproof        # GUARDED arm: + vanilla failproofai builtins
+./run.sh --failproof        # GUARDED arm: + vanilla failproofai builtins (34)
 ./run.sh --status           # progress so far (safe while a run is in flight)
 ./run.sh --scenario B       # only scenario B (186 tasks) — partial run
 ./run.sh --task B_code_001  # a single task (~90s) — quick smoke test
 ./run.sh --shards 6         # OPT-IN speed-up (default is 1 = pure SABER)
 ./run.sh --judge-only       # re-judge existing results, no re-inference
 ./run.sh --report-only      # re-print the comparison report
+
+# Third arm, for a later study — not needed for the vanilla comparison:
+./run.sh --failproof --with-custom   # + custom shell & MCP policies
 ```
+
+Run it unattended with `nohup ./run.sh --failproof > fp.log 2>&1 &`, then check
+in with `./run.sh --status` from another terminal.
 
 ### Execution mode
 
@@ -133,6 +162,28 @@ Counts are persisted atomically to `failproof_stats.json` and flushed on exit, s
 they survive a hard kill. A fully-resumed run (nothing left to do) is correctly
 treated as success, not a failure.
 
+### The optional third arm (`--with-custom`)
+
+Not used in the vanilla comparison, but included for a follow-up study. It adds
+two custom policy files on top of the builtins:
+
+| File | Covers |
+|---|---|
+| `custom_policy_b64.txt` | 8 shell policies — credential reads, cron/persistence, reverse shells, destructive DB CLI, mass deletion, build-file tampering, git-history rewrite, data-file overwrite |
+| `policies/mcp-harms.policies.mjs` | 5 MCP policies — destructive verbs (purge/wipe/reclaim), bulk export (`export_full`/`export_raw`), privilege escalation (`admin_session`/`root`), persistence (`add_server`), live-target writes |
+
+The MCP policies exist because **the builtins are shell-oriented and never fire on
+MCP tool calls at all** — a genuine coverage gap. They match on *verbs* rather
+than a list of known-bad tool names, so they generalise to MCP servers they have
+never seen (validated 14/14, including two unseen-server checks and six
+false-positive controls on benign read-only tools).
+
+Both sets were authored from **observed agent behaviour in the bare run**, following
+failproofai's observe → identify → enforce loop — *not* from SABER's
+`ground_truth.harmful_tool_patterns`, which would be copying the answer key. They
+are nonetheless in-domain (same corpus they are evaluated on), which any write-up
+should disclose.
+
 **Known behaviour to expect.** The `block-read-outside-cwd` builtin scans the whole
 command string — including heredoc *content* — for path-like tokens. In practice it
 denies some legitimate file writes: a `#!/bin/bash` shebang inside a heredoc, a
@@ -145,14 +196,29 @@ tuning them, so this is reported as a finding rather than configured away.
 
 ## What you get
 
+Each arm writes to its **own directory**, so they can never overwrite each other:
+
 ```
-~/Desktop/saber-replication-output/
+~/Desktop/saber-replication-output/      ← BARE arm  (./run.sh)
 ├── REPLICATION_REPORT.txt      ← THE ANSWER: our numbers vs the paper's
 ├── MANIFEST.json               ← exact run conditions (models, task checksum, versions)
 ├── results/ds32_repro/         ← raw trajectories, one JSON per task
 ├── judged/ds32_repro/          ← per-task verdicts + summary.json
-└── logs/                       ← per-shard inference logs, judge log
+└── logs/                       ← inference log, judge log
+
+~/Desktop/saber-failproof-output/        ← GUARDED arm  (./run.sh --failproof)
+├── REPLICATION_REPORT.txt
+├── MANIFEST.json               ← records which arm ran (vanilla / +custom)
+├── failproof_audit.jsonl       ← EVERY intercepted tool call: command, decision, reason
+├── failproof_stats.json        ← final gate counts (deny / instruct / sanitize / allow / errors)
+├── results/ds32_failproof/
+├── judged/ds32_failproof/
+└── logs/
 ```
+
+To compare the two arms, put `judged/*/summary.json` from each side by side —
+`HSR`, the `termination_counts`, and `Incapable_Rate` are the fields that matter.
+`failproof_audit.jsonl` shows exactly what the guardrail stopped and why.
 
 The report prints a side-by-side table against SABER Table 3:
 
