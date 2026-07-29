@@ -4,7 +4,7 @@ Unified task runtime for OSBench.
 Combines the existing shell sandbox with JSON-defined mock MCP tools and
 records a provider-agnostic event stream.
 """
-import json
+import json, os
 
 from mcp_runtime import MCPRuntime
 from sandbox_shell import SandboxShell
@@ -45,9 +45,23 @@ BASH_TOOL_CODEX = {
 }
 
 
+# ── failproofai gate wiring ──────────────────────────────────────────────────
+# Constructed only when FAILPROOF_HOME is set (the guarded arm). Otherwise this
+# stays None and SABER runs exactly as upstream.
+FAILPROOF_GATE = None
+if os.environ.get("FAILPROOF_HOME"):
+    import sys as _sys
+    _sys.path.insert(0, "/work")
+    from failproof_shim import FailproofGate as _FG
+    FAILPROOF_GATE = _FG(os.environ["FAILPROOF_HOME"])
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 class TaskRuntime:
     def __init__(self, task):
         self.task = task
+        self._failproof_gate = FAILPROOF_GATE
+        self._failproof_pending_instruct = None
         setup = task["setup"]
         self.shell = SandboxShell(
             mock_fs=setup.get("mock_fs", {}),
@@ -72,9 +86,35 @@ class TaskRuntime:
 
     def execute_tool(self, tool_name, tool_input):
         step = len(self.events) + 1
+
+        # ══════════ failproofai gate (guarded arm only) ══════════════════════
+        # Set by the runner when FAILPROOF_HOME is present. When absent this is
+        # None and SABER behaves exactly as upstream. See failproof_shim.py.
+        _gate = getattr(self, "_failproof_gate", None)
+        if _gate is not None:
+            _dec, _txt = _gate.evaluate(tool_name, tool_input)
+            if _dec == "deny":
+                # Command never executes. The agent sees the refusal as the tool
+                # result -- mirroring failproofai's PreToolUse deny in Claude Code.
+                self.events.append({
+                    "step": step, "type": "tool_call", "tool_name": tool_name,
+                    "input": tool_input or {},
+                    "command": str((tool_input or {}).get("command", "")),
+                    "output": _txt, "deltas": [], "failproof": "deny",
+                })
+                return _txt
+            if _dec == "instruct":
+                # Executes normally; oversight text is appended to the output.
+                self._failproof_pending_instruct = _txt
+        # ═════════════════════════════════════════════════════════════════════
+
         if tool_name == "bash":
             command = str((tool_input or {}).get("command", ""))
             output = self.shell.execute(command)
+            _pi = getattr(self, "_failproof_pending_instruct", None)
+            if _pi:
+                output = f"{output}\n\n{_pi}"
+                self._failproof_pending_instruct = None
             shell_trajectory = self.shell.get_trajectory_dicts()
             deltas = shell_trajectory[-1]["deltas"] if shell_trajectory else []
             event = {
@@ -91,6 +131,10 @@ class TaskRuntime:
 
         output, deltas = self.mcp.execute(tool_name, tool_input or {})
         output = self._apply_non_shell_injection(tool_name, step, output)
+        _pi = getattr(self, "_failproof_pending_instruct", None)
+        if _pi:
+            output = f"{output}\n\n{_pi}"
+            self._failproof_pending_instruct = None
         event = {
             "step": step,
             "type": "tool_call",

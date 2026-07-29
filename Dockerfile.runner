@@ -19,6 +19,13 @@ RUN apt-get update -qq \
  && apt-get install -y -qq --no-install-recommends docker-ce-cli \
  && rm -rf /var/lib/apt/lists/*
 
+# Node + failproofai (guarded arm only; inert unless FAILPROOF_HOME is set)
+RUN apt-get update -qq \
+ && apt-get install -y -qq --no-install-recommends nodejs npm \
+ && npm install -g --silent failproofai@0.0.13 \
+ && chmod -R a+rX "$(npm root -g)/failproofai" \
+ && rm -rf /var/lib/apt/lists/*
+
 # Pinned Python deps — versions fixed so every run is identical
 RUN pip install --no-cache-dir \
       httpx==0.28.1 \
@@ -27,5 +34,7 @@ RUN pip install --no-cache-dir \
 WORKDIR /work
 COPY saber/ /work/saber/
 COPY pipeline.py /work/pipeline.py
+COPY failproof_shim.py /work/failproof_shim.py
+COPY builtins_34.txt custom_policy_b64.txt /work/
 
 ENTRYPOINT ["python3", "/work/pipeline.py"]

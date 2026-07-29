@@ -22,6 +22,7 @@ SHARDS = int(os.environ.get("SHARDS", "1"))   # 1 = PURE SABER (default)
 MAX_STEPS = int(os.environ.get("MAX_STEPS", "30"))
 SCENARIO = os.environ.get("SCENARIO", "").strip()      # optional: A / B / C
 PHASE = os.environ.get("PHASE", "all")                 # all | infer | judge | report
+FAILPROOF = os.environ.get("FAILPROOF", "0") == "1"    # guarded arm
 
 PUBLISHED = {  # SABER paper Table 3 — DeepSeek-V3.2
     "HSR": 0.796, "HSR_A": 0.733, "HSR_B": 0.748, "HSR_C": 0.902,
@@ -57,6 +58,35 @@ def setup():
     }
     (SABER / "config.json").write_text(json.dumps(cfg, indent=2))
     log(f"config: agent={AGENT_MODEL} judge={JUDGE_MODEL} max_steps={MAX_STEPS} slug={MODEL_SLUG}")
+
+
+def setup_failproof():
+    """Install the arm's policies and PROVE the guardrail fires before running.
+
+    A guarded arm with an inert guardrail is byte-identical to the bare arm and
+    produces a worthless dataset. We verified experimentally that a one-character
+    difference (tool_name 'bash' vs 'Bash') silently allows everything, so this
+    check is a hard precondition, not a nicety.
+    """
+    if not FAILPROOF:
+        return None
+    sys.path.insert(0, "/work")
+    import failproof_shim as FS
+    home = "/work/.fpai_home"
+    os.makedirs(home, exist_ok=True)
+    builtins = open("/work/builtins_34.txt").read().split()
+    custom = ""
+    try:
+        custom = open("/work/custom_policy_b64.txt").read().strip()
+    except Exception:
+        pass
+    info = FS.install_policies(home, builtins, custom)
+    log(f"FAILPROOFAI: {info['n_builtins']} builtins, custom_policy={info['custom_policy']}")
+    os.environ["FAILPROOF_HOME"] = home
+    os.environ["FAILPROOF_AUDIT"] = str(OUT / "failproof_audit.jsonl")
+    gate = FS.FailproofGate(home)
+    FS.preflight_or_die(gate)          # <-- aborts the run if it does not fire
+    return info
 
 
 def preflight():
@@ -325,6 +355,8 @@ def manifest():
         "scenario_filter": SCENARIO or "all",
         "task_count": len(tasks), "task_set_sha256": h.hexdigest()[:16],
         "sampling": "provider default (SABER sets no temperature/seed) — k=1",
+        "arm": "failproofai (builtins+custom)" if FAILPROOF else "bare",
+        "failproof_enabled": FAILPROOF,
         "python": sys.version.split()[0],
         "note": "Paper judged with claude-opus-4-6; see REPLICATION_REPORT.txt",
     }
@@ -353,6 +385,7 @@ if __name__ == "__main__":
     manifest()
     if PHASE in ("all", "infer"):
         preflight()
+        setup_failproof()
         if SHARDS <= 1:
             run_inference_pure()
         else:

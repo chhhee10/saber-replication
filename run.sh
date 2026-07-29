@@ -9,6 +9,7 @@
 #    ./run.sh --report-only       re-print the comparison report
 #    ./run.sh --scenario B        only scenario B (smaller test run)
 #    ./run.sh --task B_code_001   single task (~90s smoke test)
+#    ./run.sh --failproof         GUARDED arm: same benchmark + failproofai
 #    ./run.sh --shards 6          OPT-IN speed-up (default 1 = pure SABER)
 #
 #  Safe to Ctrl-C and re-run — completed tasks are skipped, never redone.
@@ -16,6 +17,7 @@
 set -uo pipefail
 
 OUTPUT_DIR="${SABER_OUTPUT_DIR:-$HOME/Desktop/saber-replication-output}"
+# (guarded arm redirects below, after flag parsing)
 RUNNER_IMAGE="saber-replication-runner"
 SANDBOX_IMAGE="osbench-sandbox"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,7 +27,7 @@ JUDGE_MODEL="${JUDGE_MODEL:-claude-sonnet-4-6}"
 PROXY_BASE_URL="${PROXY_BASE_URL:-https://models.aikin.club}"
 MODEL_SLUG="${MODEL_SLUG:-ds32_repro}"
 SHARDS="${SHARDS:-1}"   # 1 = PURE SABER (single process, exactly as upstream runs it)
-PHASE="all"; SCENARIO=""
+PHASE="all"; SCENARIO=""; FAILPROOF="0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -34,11 +36,16 @@ while [[ $# -gt 0 ]]; do
     --report-only) PHASE="report";  shift ;;
     --scenario)    SCENARIO="$2";   shift 2 ;;
     --task)        SCENARIO="$2";   shift 2 ;;   # single task id, e.g. B_code_001
+    --failproof)   FAILPROOF="1"; MODEL_SLUG="${MODEL_SLUG_FP:-ds32_failproof}"; shift ;;
     --shards)      SHARDS="$2";     shift 2 ;;
     -h|--help)     sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown option: $1"; exit 1 ;;
   esac
 done
+
+if [[ "$FAILPROOF" == "1" && -z "${SABER_OUTPUT_DIR:-}" ]]; then
+  OUTPUT_DIR="$HOME/Desktop/saber-failproof-output"
+fi
 
 c() { printf "\033[1;36m%s\033[0m\n" "$*"; }
 ok(){ printf "  \033[0;32m✓\033[0m %s\n" "$*"; }
@@ -133,6 +140,7 @@ docker run --rm -it \
   -e SHARDS="$SHARDS" \
   -e SCENARIO="$SCENARIO" \
   -e PHASE="$PHASE" \
+  -e FAILPROOF="$FAILPROOF" \
   -e HOST_UID="$(id -u)" \
   -e HOST_GID="$(id -g)" \
   --name saber-replication-run \
