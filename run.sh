@@ -78,12 +78,29 @@ if ! docker info >/dev/null 2>&1; then
   er "Docker is installed but not running (or needs sudo). Start Docker and re-run."; exit 1; fi
 ok "docker available"
 
+# Load .env if present. Preferred over `export` for unattended runs: nohup,
+# cron and systemd do not source your shell profile, so an exported variable
+# can silently be absent. Already in .gitignore, so it cannot be committed.
+# An already-exported PROXY_API_KEY takes precedence over the file.
+if [[ -f "$HERE/.env" ]]; then
+  _preset="${PROXY_API_KEY:-}"
+  set -a; # shellcheck disable=SC1091
+  source "$HERE/.env"; set +a
+  [[ -n "$_preset" ]] && PROXY_API_KEY="$_preset"
+  ok "loaded $HERE/.env"
+fi
+
 if [[ -z "${PROXY_API_KEY:-}" ]]; then
   er "PROXY_API_KEY is not set."
   echo
-  echo "     Run it like this:"
-  echo "       export PROXY_API_KEY='sk-...'"
+  echo "     Either put it in a .env file next to run.sh (recommended — survives"
+  echo "     nohup/cron, and is gitignored):"
+  echo
+  echo "       printf \"PROXY_API_KEY='sk-...'\\n\" > .env && chmod 600 .env"
   echo "       ./run.sh"
+  echo
+  echo "     ...or export it for the current shell only:"
+  echo "       export PROXY_API_KEY='sk-...'"
   exit 1
 fi
 ok "API key present"

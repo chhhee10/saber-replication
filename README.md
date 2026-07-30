@@ -18,9 +18,15 @@ git clone <THIS_REPO_URL>
 cd saber-replication
 chmod +x run.sh
 
-export PROXY_API_KEY='sk-...'        # the litellm proxy key
+cp .env.example .env && chmod 600 .env    # then put the proxy key in it
 ./run.sh
 ```
+
+**Why `.env` rather than `export`:** `nohup`, `cron` and `systemd` do not source your
+shell profile, so an exported variable can be silently missing from an unattended
+run. `run.sh` loads `.env` automatically. It is gitignored, so it cannot be
+committed. An already-exported `PROXY_API_KEY` still takes precedence, so you can
+override it for a one-off run.
 
 That's the whole setup. First run builds two Docker images (~5–8 min, cached afterwards), then starts.
 
@@ -30,9 +36,11 @@ That's the whole setup. First run builds two Docker images (~5–8 min, cached a
 
 ## Runtime
 
-**~24–36 hours** in the default pure-SABER mode (single sequential process, exactly as upstream runs it), plus ~1–2 h judging.
+**~24–36 hours** in the default pure-SABER mode (single sequential process, exactly as
+upstream runs it), plus ~1–2 h judging.
 
-With the opt-in `--shards 6` speed-up: ~4–6 hours total. See *Execution mode* below.
+With the opt-in `--shards 24` speed-up: **~2.5 hours total**, measured on a 716-task
+run with zero execution errors. See *Execution mode* below.
 
 Safe to **Ctrl-C at any time** and re-run: completed tasks are skipped, never redone. It also resumes cleanly after a reboot, so it can be left running unattended.
 
@@ -75,7 +83,9 @@ At roughly 2.5–3 min per task, expect **~20–24 tasks/hour**. The log is most
 ./run.sh --status           # progress so far (safe while a run is in flight)
 ./run.sh --scenario B       # only scenario B (186 tasks) — partial run
 ./run.sh --task B_code_001  # a single task (~90s) — quick smoke test
-./run.sh --shards 6         # OPT-IN speed-up (default is 1 = pure SABER)
+./run.sh --shards 24        # OPT-IN speed-up: ~2.5h instead of ~24-36h
+                            #   (24 = the number of scenario/category units;
+                            #    higher values simply cap at 24)
 ./run.sh --judge-only       # re-judge existing results, no re-inference
 ./run.sh --report-only      # re-print the comparison report
 
@@ -83,8 +93,8 @@ At roughly 2.5–3 min per task, expect **~20–24 tasks/hour**. The log is most
 ./run.sh --failproof --with-custom   # + custom shell & MCP policies
 ```
 
-Run it unattended with `nohup ./run.sh --failproof > fp.log 2>&1 &`, then check
-in with `./run.sh --status` from another terminal.
+Run it unattended with `nohup ./run.sh --failproof --shards 24 > fp.log 2>&1 &`, then
+check in with `./run.sh --status` from another terminal.
 
 ### Execution mode
 
@@ -99,10 +109,12 @@ No sharding, no parallelism, no retry logic, no interference of any kind. Nothin
 ours is in the execution path. This is the slow but **unimpeachable** path: ~24-36 h
 for all 716 tasks.
 
-If you need it faster, `--shards 6` is available as an **opt-in**. It runs SABER's same
+If you need it faster, `--shards 24` is available as an **opt-in**. It runs SABER's same
 runner once per `(scenario, category)` using SABER's *own* documented CLI arguments,
-six at a time. Same code, same tasks, same judge — only the process layout differs,
-cutting the run to ~4 h.
+several at a time. Same code, same tasks, same judge — only the process layout differs,
+cutting a 716-task run to **~2.5 h** (measured, with zero execution errors on a
+server-class machine). There are 24 scenario/category units in total, so values above
+24 simply cap there.
 
 The trade-off, stated plainly: SABER applies a hard `timeout=10` when starting each
 task's Docker container. Under parallel load that can occasionally be exceeded, and a
