@@ -31,6 +31,45 @@ PUBLISHED = {  # SABER paper Table 3 — DeepSeek-V3.2
 }
 
 
+class _Tee:
+    """Mirror stdout/stderr into /output/logs/pipeline.log.
+
+    The pipeline's own narration is the highest-value log -- it carries the arm,
+    the fire test, GATE HEALTH and every FATAL. Relying on the operator to
+    redirect it (`> fp.log`) means it is lost whenever they forget, so it is
+    captured unconditionally alongside the results.
+    """
+    def __init__(self, stream, path):
+        self.stream = stream
+        try:
+            self.fh = open(path, "a", buffering=1)
+        except Exception:
+            self.fh = None
+    def write(self, data):
+        self.stream.write(data)
+        if self.fh:
+            try:
+                self.fh.write(data)
+            except Exception:
+                pass
+    def flush(self):
+        self.stream.flush()
+        if self.fh:
+            try:
+                self.fh.flush()
+            except Exception:
+                pass
+    def isatty(self):
+        return getattr(self.stream, "isatty", lambda: False)()
+
+
+def start_logging():
+    (OUT / "logs").mkdir(parents=True, exist_ok=True)
+    path = OUT / "logs" / "pipeline.log"
+    sys.stdout = _Tee(sys.stdout, path)
+    sys.stderr = _Tee(sys.stderr, path)
+
+
 def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
@@ -220,6 +259,7 @@ def run_inference_pure():
     log(f"  command : python3 run_osbench.py {MODEL_SLUG}" + (f" {SCENARIO}" if SCENARIO else ""))
     log(f"  tasks   : {total}   already done: {n_done()} (SABER's own resume logic)")
     log("  NOTE: this is the slow, unimpeachable path (~24-36 h for 716 tasks).")
+    (OUT / "logs").mkdir(parents=True, exist_ok=True)
     lf = open(OUT / "logs" / "inference.log", "a")
     args = [sys.executable, "run_osbench.py", MODEL_SLUG] + ([SCENARIO] if SCENARIO else [])
     p = subprocess.run(args, cwd=SABER, stdout=lf, stderr=subprocess.STDOUT)
@@ -275,12 +315,13 @@ def run_inference_sharded():
         return
 
     logdir = OUT / "logs"
+    (logdir / "tasks").mkdir(parents=True, exist_ok=True)
     queue, running = list(todo), []
     started = 0
     while queue or running:
         while queue and len(running) < SHARDS:
             tid = queue.pop(0)
-            lf = open(logdir / f"infer_worker_{len(running)}.log", "a")
+            lf = open(logdir / "tasks" / f"{tid}.log", "a")
             p = subprocess.Popen([sys.executable, "run_osbench.py", MODEL_SLUG, tid],
                                  cwd=SABER, stdout=lf, stderr=subprocess.STDOUT)
             p._tag, p._lf = tid, lf
@@ -453,6 +494,24 @@ def report():
     log("report -> /output/REPLICATION_REPORT.txt")
 
 
+def mark_run_boundary():
+    """Every log is opened append-mode so a resumed run never truncates earlier
+    output. That makes runs blur together, so stamp a boundary into each."""
+    stamp = datetime.now(timezone.utc).isoformat()
+    arm = ("failproofai+custom" if (FAILPROOF and FP_CUSTOM)
+           else "failproofai" if FAILPROOF else "bare")
+    banner = (f"\n{'='*78}\n=== RUN START {stamp}  arm={arm}  slug={MODEL_SLUG} "
+              f"shards={SHARDS} filter={SCENARIO or 'all'} phase={PHASE}\n{'='*78}\n")
+    for name in ("pipeline.log", "inference.log", "judge.log", "retry.log"):
+        f = OUT / "logs" / name
+        if f.exists() or name == "pipeline.log":
+            try:
+                with open(f, "a") as fh:
+                    fh.write(banner)
+            except Exception:
+                pass
+
+
 def manifest():
     """Record exact conditions so runs are comparable across machines."""
     tasks = sorted(glob.glob(str(SABER / "tasks" / "*" / "*" / "*.json")))
@@ -492,6 +551,9 @@ def fix_ownership():
 
 
 if __name__ == "__main__":
+    OUT.mkdir(parents=True, exist_ok=True)
+    start_logging()
+    mark_run_boundary()
     log("SABER replication pipeline starting")
     import atexit
     atexit.register(fix_ownership)

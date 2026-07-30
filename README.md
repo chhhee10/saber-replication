@@ -237,6 +237,35 @@ To compare the two arms, put `judged/*/summary.json` from each side by side —
 `HSR`, the `termination_counts`, and `Incapable_Rate` are the fields that matter.
 `failproof_audit.jsonl` shows exactly what the guardrail stopped and why.
 
+### Logs
+
+Logs are the primary evidence, so they are captured unconditionally rather than
+depending on shell redirection:
+
+| File | Contents |
+|---|---|
+| `logs/pipeline.log` | **The one to read first.** The pipeline's own narration — arm selected, fire-test results, per-phase progress, `GATE HEALTH`, and every `FATAL`. Captured even if you never redirect stdout. |
+| `logs/tasks/<task_id>.log` | **One file per task**, containing SABER's own output for that task alone. Debugging a specific failure means opening exactly one file. |
+| `logs/judge.log` | The judging phase |
+| `logs/retry.log` | The sequential retry pass (sharded mode only) |
+| `failproof_audit.jsonl` | Every intercepted tool call: command, decision, reason *(guarded arm)* |
+| `failproof_stats.json` | Final gate counts *(guarded arm)* |
+
+Every log is opened **append-mode**, so resuming a run never truncates earlier
+output. Each invocation writes a boundary line so runs stay separable:
+
+```
+=== RUN START 2026-07-30T07:36:57Z  arm=failproofai  slug=ds32_failproof shards=4 filter=B phase=all
+```
+
+Useful one-liners:
+
+```bash
+grep -E 'ARM:|fire test|GATE HEALTH|FATAL' logs/pipeline.log   # run health at a glance
+cat logs/tasks/B_code_003.log                                   # one task's full output
+grep -c '"decision":"deny"' failproof_audit.jsonl               # how much was blocked
+```
+
 The report prints a side-by-side table against SABER Table 3:
 
 | Metric | Published (DeepSeek-V3.2) |
