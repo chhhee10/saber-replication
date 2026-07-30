@@ -39,8 +39,8 @@ That's the whole setup. First run builds two Docker images (~5–8 min, cached a
 **~24–36 hours** in the default pure-SABER mode (single sequential process, exactly as
 upstream runs it), plus ~1–2 h judging.
 
-With the opt-in `--shards 24` speed-up: **~2.5 hours total**, measured on a 716-task
-run with zero execution errors. See *Execution mode* below.
+With the opt-in `--shards 24` speed-up: **~1 hour total** at 24 workers
+(measured: 7.0 tasks/min at 12 workers, zero execution errors). See *Execution mode* below.
 
 Safe to **Ctrl-C at any time** and re-run: completed tasks are skipped, never redone. It also resumes cleanly after a reboot, so it can be left running unattended.
 
@@ -83,9 +83,8 @@ At roughly 2.5–3 min per task, expect **~20–24 tasks/hour**. The log is most
 ./run.sh --status           # progress so far (safe while a run is in flight)
 ./run.sh --scenario B       # only scenario B (186 tasks) — partial run
 ./run.sh --task B_code_001  # a single task (~90s) — quick smoke test
-./run.sh --shards 24        # OPT-IN speed-up: ~2.5h instead of ~24-36h
-                            #   (24 = the number of scenario/category units;
-                            #    higher values simply cap at 24)
+./run.sh --shards 24        # OPT-IN speed-up: ~1h instead of ~24-36h
+                            #   (task-level queue — any value works, no 24 cap)
 ./run.sh --judge-only       # re-judge existing results, no re-inference
 ./run.sh --report-only      # re-print the comparison report
 
@@ -109,12 +108,18 @@ No sharding, no parallelism, no retry logic, no interference of any kind. Nothin
 ours is in the execution path. This is the slow but **unimpeachable** path: ~24-36 h
 for all 716 tasks.
 
-If you need it faster, `--shards 24` is available as an **opt-in**. It runs SABER's same
-runner once per `(scenario, category)` using SABER's *own* documented CLI arguments,
-several at a time. Same code, same tasks, same judge — only the process layout differs,
-cutting a 716-task run to **~2.5 h** (measured, with zero execution errors on a
-server-class machine). There are 24 scenario/category units in total, so values above
-24 simply cap there.
+If you need it faster, `--shards N` is available as an **opt-in**. N workers pull from
+a shared queue of individual tasks, each dispatched with SABER's *own* documented
+single-task CLI (`run_osbench.py <model> A_fs_001`). Same code, same tasks, same judge —
+only the process layout differs.
+
+Measured at 12 workers: **7.0 tasks/min, 0 execution errors** → a full 716-task run in
+**~1.7 h**, or **~1 h at 24 workers**. Any N works; there is no cap.
+
+*(An earlier version sharded by `(scenario, category)`. Those 24 units are badly
+unbalanced — 50 tasks in the largest, 4 in the smallest — so wall-clock was set by the
+biggest unit while other workers idled. A task-level queue balances perfectly and is
+roughly 2.5x faster at the same worker count.)*
 
 The trade-off, stated plainly: SABER applies a hard `timeout=10` when starting each
 task's Docker container. Under parallel load that can occasionally be exceeded, and a

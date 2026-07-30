@@ -231,36 +231,61 @@ def run_inference_pure():
         log("  Left as-is to stay faithful to SABER's behaviour. See logs/inference.log.")
 
 
+def all_task_ids():
+    """Every task id under the current filter, in SABER's own sorted order."""
+    ids = []
+    for sc in (["A", "B", "C"] if not SCENARIO else [SCENARIO]):
+        d = SABER / "tasks" / sc
+        if d.is_dir():
+            for cat in sorted(x for x in d.iterdir() if x.is_dir()):
+                ids += [f.stem for f in sorted(cat.glob("*.json"))]
+    return ids
+
+
+def done_task_ids():
+    return {Path(f).stem for f in
+            glob.glob(str(OUT / "results" / MODEL_SLUG / "**" / "*.json"), recursive=True)}
+
+
 def run_inference_sharded():
     """OPT-IN FAST MODE (--shards N, N>1).
 
-    Runs SABER's runner once per (scenario, category) using its OWN documented
-    CLI arguments, N at a time. Same code, same tasks, same judge — only the
-    process layout differs. Adds a purge/retry safety net because parallel load
-    can trip SABER's 10s container-start timeout.
+    Runs SABER's runner once per TASK using its own documented single-task CLI
+    (`run_osbench.py <model> <task_id>`), N workers pulling from a shared queue.
+
+    Task-level rather than (scenario, category)-level: the 24 category units are
+    badly unbalanced (50 tasks vs 4, a 12.5x spread), so category sharding is
+    bounded by the largest unit while other workers idle. A task queue balances
+    perfectly and lifts the concurrency ceiling above 24.
     """
-    pairs = shards()
-    total = n_total()
-    log(f"INFERENCE: SHARDED MODE — {total} tasks, {len(pairs)} shard units, {SHARDS} workers")
-    log("  (opt-in: faster, but adds parallel load SABER does not run under by default)")
     purge_errored()
-    log(f"  already done: {n_done()} (resumable — re-running skips completed tasks)")
-    queue, running = list(pairs), []
+    todo = [t for t in all_task_ids() if t not in done_task_ids()]
+    total = n_total()
+    log(f"INFERENCE: SHARDED MODE — {total} tasks, {len(todo)} remaining, {SHARDS} workers")
+    log("  (opt-in: faster, but adds parallel load SABER does not run under by default)")
+    if not todo:
+        log("  nothing to do — all tasks already complete")
+        return
+
     logdir = OUT / "logs"
+    queue, running = list(todo), []
+    started = 0
     while queue or running:
         while queue and len(running) < SHARDS:
-            sc, cat = queue.pop(0)
-            lf = open(logdir / f"infer_{sc}_{cat}.log", "a")
-            p = subprocess.Popen([sys.executable, "run_osbench.py", MODEL_SLUG, sc, cat],
+            tid = queue.pop(0)
+            lf = open(logdir / f"infer_worker_{len(running)}.log", "a")
+            p = subprocess.Popen([sys.executable, "run_osbench.py", MODEL_SLUG, tid],
                                  cwd=SABER, stdout=lf, stderr=subprocess.STDOUT)
-            p._tag, p._lf = f"{sc}/{cat}", lf
+            p._tag, p._lf = tid, lf
             running.append(p)
-            log(f"  + shard {sc}/{cat} (pid {p.pid})")
-        time.sleep(20)
+            started += 1
+        time.sleep(5)
         for p in running[:]:
             if p.poll() is not None:
-                p._lf.close(); running.remove(p)
-                log(f"  - shard {p._tag} finished rc={p.returncode} | progress {n_done()}/{total}")
+                p._lf.close()
+                running.remove(p)
+        if started % 25 == 0 or not queue:
+            log(f"  progress {n_done()}/{total}  ({len(queue)} queued, {len(running)} running)")
 
     # Retry pass: errored tasks are purged and re-run once, sequentially, so a
     # transient timeout under parallel load cannot corrupt the denominator.
@@ -268,9 +293,10 @@ def run_inference_sharded():
     if bad:
         log(f"RETRY: {len(bad)} task(s) errored — re-running them sequentially")
         purge_errored()
+        retry = [t for t in all_task_ids() if t not in done_task_ids()]
         lf = open(OUT / "logs" / "retry.log", "a")
-        for sc, cat in pairs:
-            subprocess.run([sys.executable, "run_osbench.py", MODEL_SLUG, sc, cat],
+        for tid in retry:
+            subprocess.run([sys.executable, "run_osbench.py", MODEL_SLUG, tid],
                            cwd=SABER, stdout=lf, stderr=subprocess.STDOUT)
         lf.close()
 
@@ -283,7 +309,7 @@ def run_inference_sharded():
         log("  These become 'Incapable' in the judge and are EXCLUDED from the HSR")
         log("  denominator, which shifts the result. Check logs/retry.log.")
         if pct > 0.02:
-            log("  >2% failure rate — re-run with fewer shards, e.g. ./run.sh --shards 2")
+            log("  >2% failure rate — re-run with fewer shards, e.g. ./run.sh --shards 8")
         log("=" * 70)
 
 
