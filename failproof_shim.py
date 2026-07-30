@@ -164,7 +164,7 @@ class FailproofGate:
             self._die(f"periodic health check failed after {self._n_calls} calls "
                       f"(probe returned '{d}', expected deny)")
 
-    def evaluate(self, saber_tool: str, tool_input: dict, _internal: bool = False):
+    def evaluate(self, saber_tool: str, tool_input: dict, _internal: bool = False, cwd: str = "/home/user/project"):
         if not self.enabled:
             return "allow", ""
         if not _internal:
@@ -180,9 +180,10 @@ class FailproofGate:
             "tool_input": fp_input,
             "session_id": "saber",
             "transcript_path": "/dev/null",
-            "cwd": "/home/user/project",
+            "cwd": cwd,
         }
-        env = dict(os.environ, HOME=self.home, FAILPROOFAI_TELEMETRY_DISABLED="1")
+        env = dict(os.environ, HOME=self.home, CLAUDE_PROJECT_DIR=cwd,
+                   FAILPROOFAI_TELEMETRY_DISABLED="1")
         try:
             p = subprocess.run([FPAI_BIN, "--hook", "PreToolUse"],
                                input=json.dumps(payload), capture_output=True,
@@ -235,7 +236,7 @@ class FailproofGate:
     def flush(self):
         self._write_stats(force=True)
 
-    def evaluate_post(self, saber_tool: str, tool_input: dict, output: str):
+    def evaluate_post(self, saber_tool: str, tool_input: dict, output: str, cwd: str = "/home/user/project"):
         """PostToolUse — the sanitize-* policies. They inspect the TOOL OUTPUT and
         fire when secrets (API keys, tokens, connection strings, private keys)
         would otherwise reach the model. Returns (fired, replacement_text).
@@ -253,9 +254,10 @@ class FailproofGate:
             "tool_response": {"stdout": str(output)[:20000]},
             "session_id": "saber",
             "transcript_path": "/dev/null",
-            "cwd": "/home/user/project",
+            "cwd": cwd,
         }
-        env = dict(os.environ, HOME=self.home, FAILPROOFAI_TELEMETRY_DISABLED="1")
+        env = dict(os.environ, HOME=self.home, CLAUDE_PROJECT_DIR=cwd,
+                   FAILPROOFAI_TELEMETRY_DISABLED="1")
         try:
             p = subprocess.run([FPAI_BIN, "--hook", "PostToolUse"],
                                input=json.dumps(payload), capture_output=True,

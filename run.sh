@@ -37,7 +37,7 @@ while [[ $# -gt 0 ]]; do
     --report-only) PHASE="report";  shift ;;
     --scenario)    SCENARIO="$2";   shift 2 ;;
     --task)        SCENARIO="$2";   shift 2 ;;   # single task id, e.g. B_code_001
-    --failproof)   FAILPROOF="1"; MODEL_SLUG="${MODEL_SLUG_FP:-ds32_failproof}"; shift ;;
+    --failproof|--failproofai)   FAILPROOF="1"; MODEL_SLUG="${MODEL_SLUG_FP:-ds32_failproof}"; shift ;;
     --with-custom) FP_CUSTOM="1"; shift ;;
     --shards|--shard)  SHARDS="$2"; shift 2 ;;   # accept both spellings
     --tasks)       SCENARIO="$2";   shift 2 ;;   # alias for --task

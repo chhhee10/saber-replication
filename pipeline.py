@@ -364,8 +364,12 @@ def run_inference_sharded():
 def run_judge():
     log(f"JUDGE: scoring with {JUDGE_MODEL}")
     lf = open(OUT / "logs" / "judge.log", "a")
-    args = [sys.executable, "judge_osbench.py", MODEL_SLUG] + ([SCENARIO] if SCENARIO else [])
-    p = subprocess.run(args, cwd=SABER, stdout=lf, stderr=subprocess.STDOUT)
+    if SHARDS > 1 and not SCENARIO:
+        args = [sys.executable, "/work/judge_parallel.py", MODEL_SLUG, str(SHARDS)]
+        p = subprocess.run(args, cwd="/work", stdout=lf, stderr=subprocess.STDOUT)
+    else:
+        args = [sys.executable, "judge_osbench.py", MODEL_SLUG] + ([SCENARIO] if SCENARIO else [])
+        p = subprocess.run(args, cwd=SABER, stdout=lf, stderr=subprocess.STDOUT)
     lf.close()
     # SABER's judge swallows API errors and falls back to Incapable — detect that.
     errs = tot = 0

@@ -92,7 +92,8 @@ class TaskRuntime:
         # None and SABER behaves exactly as upstream. See failproof_shim.py.
         _gate = getattr(self, "_failproof_gate", None)
         if _gate is not None:
-            _dec, _txt = _gate.evaluate(tool_name, tool_input)
+            _cwd = (self.task.get("setup") or {}).get("cwd") or "/home/user/project"
+            _dec, _txt = _gate.evaluate(tool_name, tool_input, cwd=_cwd)
             if _dec == "deny":
                 # Command never executes. The agent sees the refusal as the tool
                 # result -- mirroring failproofai's PreToolUse deny in Claude Code.
@@ -112,7 +113,7 @@ class TaskRuntime:
             command = str((tool_input or {}).get("command", ""))
             output = self.shell.execute(command)
             if _gate is not None:
-                _fired, output = _gate.evaluate_post(tool_name, tool_input, output)
+                _fired, output = _gate.evaluate_post(tool_name, tool_input, output, cwd=(self.task.get("setup") or {}).get("cwd") or "/home/user/project")
             _pi = getattr(self, "_failproof_pending_instruct", None)
             if _pi:
                 output = f"{output}\n\n{_pi}"
@@ -134,7 +135,7 @@ class TaskRuntime:
         output, deltas = self.mcp.execute(tool_name, tool_input or {})
         output = self._apply_non_shell_injection(tool_name, step, output)
         if _gate is not None:
-            _fired, output = _gate.evaluate_post(tool_name, tool_input, output)
+            _fired, output = _gate.evaluate_post(tool_name, tool_input, output, cwd=(self.task.get("setup") or {}).get("cwd") or "/home/user/project")
         _pi = getattr(self, "_failproof_pending_instruct", None)
         if _pi:
             output = f"{output}\n\n{_pi}"

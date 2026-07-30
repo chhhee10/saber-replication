@@ -272,7 +272,12 @@ def main():
         if t and r["id"] in judged:
             jobs.append((r["id"], t, r, judged[r["id"]], out_dir))
     if limit:
-        jobs = jobs[:limit]
+        # Prefer tasks the guardrail actually acted on -- a sample of tasks with
+        # no blocks says nothing about its performance.
+        blocked = [j for j in jobs
+                   if any(e.get("failproof") == "deny"
+                          for e in (j[2].get("events") or []))]
+        jobs = (blocked + [j for j in jobs if j not in blocked])[:limit]
     print(f"guardrail judge: {len(jobs)} tasks, {workers} workers", flush=True)
 
     done = []
