@@ -39,7 +39,8 @@ while [[ $# -gt 0 ]]; do
     --task)        SCENARIO="$2";   shift 2 ;;   # single task id, e.g. B_code_001
     --failproof)   FAILPROOF="1"; MODEL_SLUG="${MODEL_SLUG_FP:-ds32_failproof}"; shift ;;
     --with-custom) FP_CUSTOM="1"; shift ;;
-    --shards)      SHARDS="$2";     shift 2 ;;
+    --shards|--shard)  SHARDS="$2"; shift 2 ;;   # accept both spellings
+    --tasks)       SCENARIO="$2";   shift 2 ;;   # alias for --task
     -h|--help)     sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown option: $1"; exit 1 ;;
   esac
