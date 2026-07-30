@@ -127,11 +127,15 @@ if [[ -z "$(docker images -q $SANDBOX_IMAGE 2>/dev/null)" ]]; then
 fi
 ok "$SANDBOX_IMAGE ready"
 
-if [[ -z "$(docker images -q $RUNNER_IMAGE 2>/dev/null)" ]]; then
-  echo "  building $RUNNER_IMAGE (~2 min)..."
-  docker build -q -t "$RUNNER_IMAGE" -f "$HERE/Dockerfile.runner" "$HERE" >/dev/null || { er "runner build failed"; exit 1; }
+# ALWAYS rebuild the runner. It bakes in pipeline.py / failproof_shim.py / the
+# policy files, so a cached image silently runs STALE CODE after a git pull --
+# which is how a `--failproof` run can come out bare with no error at all.
+# Docker's layer cache makes this near-instant when nothing has changed.
+echo "  building $RUNNER_IMAGE (cached if unchanged)..."
+if ! docker build -q -t "$RUNNER_IMAGE" -f "$HERE/Dockerfile.runner" "$HERE" >/dev/null; then
+  er "runner build failed"; exit 1
 fi
-ok "$RUNNER_IMAGE ready"
+ok "$RUNNER_IMAGE ready (up to date with local source)"
 
 # ---------------------------------------------------------------- run
 c "[3/4] Running pipeline"

@@ -347,6 +347,7 @@ Roughly **$20 per full run** — about **$7** for inference (DeepSeek-V3.2 is ch
 
 | Problem | Fix |
 |---|---|
+| No `ARM:` line / no `fire test` in a `--failproof` run | You are running a **stale runner image**. The image bakes in `pipeline.py`, so before this was fixed a `git pull` updated the files on disk while `run.sh` reused the old image — producing a silent *bare* run. `run.sh` now rebuilds every time (cached when unchanged). If you are on an older checkout, force it: `docker rmi saber-replication-runner` then re-run. |
 | `Docker is not running` | Start Docker Desktop, or `sudo systemctl start docker` |
 | `PROXY_API_KEY is not set` | `export PROXY_API_KEY='sk-...'` before running |
 | Sandbox image build fails | The upstream Dockerfile uses Aliyun mirrors (fast in China). Outside China, edit `saber/Dockerfile.sandbox` and delete the `mirrors.aliyun.com` `sed` line. |
