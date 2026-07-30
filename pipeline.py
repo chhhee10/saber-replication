@@ -232,7 +232,14 @@ def run_inference_pure():
 
 
 def all_task_ids():
-    """Every task id under the current filter, in SABER's own sorted order."""
+    """Every task id under the current filter, in SABER's own sorted order.
+
+    SCENARIO may be empty (all), a scenario letter (A/B/C), or a single task id
+    (e.g. B_code_002) -- the same three forms SABER's own CLI accepts.
+    """
+    if SCENARIO and "_" in SCENARIO:                     # single task id
+        hit = glob.glob(str(SABER / "tasks" / "*" / "*" / f"{SCENARIO}.json"))
+        return [Path(hit[0]).stem] if hit else []
     ids = []
     for sc in (["A", "B", "C"] if not SCENARIO else [SCENARIO]):
         d = SABER / "tasks" / sc
@@ -351,6 +358,11 @@ def check_gate_health():
         return True
     f = OUT / "failproof_stats.json"
     if not f.exists():
+        # No stats because the gate was never consulted -- e.g. every task was
+        # already complete. Correct, not a failure. Only alarming if work ran.
+        if n_done() >= n_total():
+            log("  (no tool calls this run — all tasks already complete; nothing to verify)")
+            return True
         log("WARNING: no failproof_stats.json — cannot confirm the gate stayed live.")
         return False
     try:

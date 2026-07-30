@@ -158,6 +158,24 @@ echo
 DOCKER_TTY=""
 if [[ -t 0 && -t 1 ]]; then DOCKER_TTY="-it"; fi
 
+# The runner uses a fixed container name, so a leftover from a previous run
+# makes `docker run` fail with a cryptic "name already in use" (exit 125).
+# A hard Ctrl-C can leave one behind even with --rm. Distinguish the two cases:
+# a container that is genuinely RUNNING means a run is already in progress and
+# must not be killed; a stopped one is debris and is removed.
+RUN_NAME="saber-replication-run"
+if docker ps --filter "name=^${RUN_NAME}$" --format '{{.Names}}' 2>/dev/null | grep -q .; then
+  er "A run is already in progress (container '$RUN_NAME' is up)."
+  echo "     Watch it with:   docker logs -f $RUN_NAME"
+  echo "     Or check:        ./run.sh --status"
+  echo "     To stop it:      docker rm -f $RUN_NAME"
+  exit 1
+fi
+if docker ps -aq --filter "name=^${RUN_NAME}$" 2>/dev/null | grep -q .; then
+  docker rm -f "$RUN_NAME" >/dev/null 2>&1
+  ok "removed a stopped container left by a previous run"
+fi
+
 docker run --rm $DOCKER_TTY \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$OUTPUT_DIR":/output \
