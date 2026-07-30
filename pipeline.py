@@ -162,6 +162,36 @@ def check_arm_consistency():
             log("=" * 70)
             sys.exit(9)
         return
+    # A stale runner image can ignore --failproof while still writing a manifest
+    # that claims failproof_enabled=true, so the flag alone is not sufficient.
+    # Check the results themselves.
+    if FAILPROOF:
+        done = unguarded = 0
+        for f in glob.glob(str(OUT / "results" / MODEL_SLUG / "**" / "*.json"), recursive=True):
+            try:
+                ev = (json.load(open(f)).get("events") or [])
+            except Exception:
+                continue
+            if not ev:
+                continue
+            done += 1
+            # newer runs stamp this explicitly; older ones fall back to "no gate
+            # decision anywhere in the task", which is the contamination signature
+            if any("failproof_active" in e for e in ev):
+                if not any(e.get("failproof_active") for e in ev):
+                    unguarded += 1
+            elif not any(e.get("failproof") for e in ev):
+                unguarded += 1
+        if done and unguarded / done > 0.10:
+            log("=" * 70)
+            log(f"FATAL: {unguarded} of {done} completed tasks ({unguarded/done:.0%}) show NO")
+            log("  guardrail activity. They were almost certainly produced by a run whose")
+            log("  runner image predated --failproof support. Resuming would skip them as")
+            log("  'already done' and yield a partly-unguarded arm.")
+            log(f"  Delete {OUT} and start clean.")
+            log("=" * 70)
+            sys.exit(9)
+
     if bool(prev_fp) != bool(FAILPROOF):
         log("=" * 70)
         log("FATAL: this output directory holds results from a DIFFERENT arm.")

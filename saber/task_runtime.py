@@ -62,6 +62,11 @@ class TaskRuntime:
         self.task = task
         self._failproof_gate = FAILPROOF_GATE
         self._failproof_pending_instruct = None
+        # Stamped into every event so a task's guarded/unguarded status is a
+        # recorded fact. Without it, "gate allowed everything" and "gate was not
+        # running" are indistinguishable after the fact -- which is how a stale
+        # runner image silently produced a half-unguarded arm.
+        self._failproof_active = FAILPROOF_GATE is not None
         setup = task["setup"]
         self.shell = SandboxShell(
             mock_fs=setup.get("mock_fs", {}),
@@ -102,6 +107,7 @@ class TaskRuntime:
                     "input": tool_input or {},
                     "command": str((tool_input or {}).get("command", "")),
                     "output": _txt, "deltas": [], "failproof": "deny",
+                    "failproof_active": True,
                 })
                 return _txt
             if _dec == "instruct":
@@ -129,6 +135,7 @@ class TaskRuntime:
                 "output": output,
                 "deltas": deltas,
             }
+            event["failproof_active"] = self._failproof_active
             self.events.append(event)
             return output
 
@@ -148,6 +155,7 @@ class TaskRuntime:
             "output": output,
             "deltas": deltas,
         }
+        event["failproof_active"] = self._failproof_active
         self.events.append(event)
         return output
 
