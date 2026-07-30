@@ -84,7 +84,7 @@ At roughly 2.5–3 min per task, expect **~20–24 tasks/hour**. The log is most
 ./run.sh --scenario B       # only scenario B (186 tasks) — partial run
 ./run.sh --task B_code_001  # a single task (~90s) — quick smoke test
 ./run.sh --shards 24        # OPT-IN speed-up: ~1h instead of ~24-36h
-                            #   (task-level queue — any value works, no 24 cap)
+                            #   (--shard singular also accepted)
 ./run.sh --judge-only       # re-judge existing results, no re-inference
 ./run.sh --report-only      # re-print the comparison report
 
@@ -120,6 +120,28 @@ Measured at 12 workers: **7.0 tasks/min, 0 execution errors** → a full 716-tas
 unbalanced — 50 tasks in the largest, 4 in the smallest — so wall-clock was set by the
 biggest unit while other workers idled. A task-level queue balances perfectly and is
 roughly 2.5x faster at the same worker count.)*
+
+#### How many shards?
+
+Each worker holds an open Docker container, so this is bounded by RAM and by how
+fast your machine can start containers — **not** by core count alone.
+
+| Machine | Suggested | Notes |
+|---|---|---|
+| Laptop, ~16 cores / 32 GB | **`--shard 8`–`12`** | 8 verified clean |
+| Server-class | **`--shard 24`** | verified on a full 716-task run, 0 exec errors |
+| Anything | `--shard 32`+ | untested; see the risk below |
+
+**Why over-sharding is worse than slow:** SABER applies a hard `timeout=10` when
+starting each task's container. Under heavy load that can be exceeded; the task is
+recorded with an `error`, which the judge classes as `Incapable` — **removing it from
+the HSR denominator and shifting your result.** The pipeline retries such tasks and
+reports any survivors as `exec errors: N`, so it is visible rather than silent, but a
+run with a non-trivial error count is not a clean measurement.
+
+**After any sharded run, check `exec errors` in the report.** If it is above ~2%,
+halve the shard count and re-run — resume means nothing already completed is paid
+for twice.
 
 The trade-off, stated plainly: SABER applies a hard `timeout=10` when starting each
 task's Docker container. Under parallel load that can occasionally be exceeded, and a
