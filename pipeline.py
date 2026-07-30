@@ -135,6 +135,44 @@ def setup_failproof():
     return info
 
 
+def check_arm_consistency():
+    """Refuse to resume into results produced under a DIFFERENT arm.
+
+    SABER's resume logic skips any task whose result file exists -- it cannot know
+    the earlier run had different conditions. A real incident: a stale runner image
+    silently ignored --failproof, 347 tasks ran unguarded and were saved, and the
+    corrected re-run then SKIPPED them. The output looked like one guarded arm but
+    48% of it had no guardrail at all, and every downstream number was wrong.
+    """
+    m = OUT / "MANIFEST.json"
+    if not m.exists():
+        return
+    try:
+        prev = json.load(open(m))
+    except Exception:
+        return
+    prev_fp = prev.get("failproof_enabled")
+    if prev_fp is None:                       # manifest predates arm tracking
+        n = n_done()
+        if n:
+            log("=" * 70)
+            log(f"FATAL: {n} existing results were produced before arm tracking existed,")
+            log("  so the arm they ran under cannot be verified. Resuming would mix arms.")
+            log(f"  Use a fresh output directory, or delete {OUT}/results.")
+            log("=" * 70)
+            sys.exit(9)
+        return
+    if bool(prev_fp) != bool(FAILPROOF):
+        log("=" * 70)
+        log("FATAL: this output directory holds results from a DIFFERENT arm.")
+        log(f"  existing: failproof_enabled={prev_fp}   this run: failproof_enabled={FAILPROOF}")
+        log("  Resuming would silently mix guarded and unguarded tasks -- SABER's resume")
+        log("  skips completed tasks and cannot tell they ran under other conditions.")
+        log(f"  Use a fresh output directory, or delete {OUT}/results.")
+        log("=" * 70)
+        sys.exit(9)
+
+
 def reap_orphans():
     """Remove sandbox containers orphaned by a previous killed run.
 
@@ -565,6 +603,7 @@ if __name__ == "__main__":
     manifest()
     if PHASE in ("all", "infer"):
         preflight()
+        check_arm_consistency()
         reap_orphans()
         setup_failproof()
         if SHARDS <= 1:

@@ -37,6 +37,7 @@ COPY pipeline.py /work/pipeline.py
 COPY failproof_shim.py /work/failproof_shim.py
 COPY judge_variant.py /work/judge_variant.py
 COPY judge_parallel.py /work/judge_parallel.py
+COPY reclassify_blocked.py /work/reclassify_blocked.py
 COPY guardrail_judge.py /work/guardrail_judge.py
 COPY builtins_34.txt custom_policy_b64.txt /work/
 COPY policies/ /work/policies/
